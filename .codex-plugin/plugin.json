@@ -1,0 +1,11 @@
+{
+  "name": "myskills",
+  "description": "Personal skill collection: plugin-doctor, review2md",
+  "version": "0.1.0",
+  "author": {
+    "name": "chengjon"
+  },
+  "homepage": "https://github.com/chengjon/myskills",
+  "repository": "https://github.com/chengjon/myskills",
+  "license": "MIT"
+}

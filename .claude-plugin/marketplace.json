@@ -1,0 +1,20 @@
+{
+  "name": "chengjon-skills",
+  "description": "Personal skill collection: plugin-doctor, review2md, and more",
+  "owner": {
+    "name": "chengjon"
+  },
+  "plugins": [
+    {
+      "name": "myskills",
+      "description": "Plugin doctor, document review, and other productivity skills for AI coding runtimes",
+      "version": "0.1.0",
+      "source": "./",
+      "author": {
+        "name": "chengjon"
+      },
+      "homepage": "https://github.com/chengjon/myskills",
+      "category": "productivity"
+    }
+  ]
+}

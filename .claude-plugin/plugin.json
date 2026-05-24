@@ -1,0 +1,15 @@
+{
+  "name": "myskills",
+  "version": "0.1.0",
+  "description": "Personal skill collection for AI coding runtimes",
+  "author": {
+    "name": "chengjon"
+  },
+  "homepage": "https://github.com/chengjon/myskills",
+  "repository": "https://github.com/chengjon/myskills",
+  "license": "MIT",
+  "skills": [
+    "./skills/plugin-doctor",
+    "./skills/review2md"
+  ]
+}
