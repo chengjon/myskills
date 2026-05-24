@@ -32,7 +32,7 @@ ln -s /path/to/myskills/skills/function-tree ~/.codex/skills/function-tree
 ln -s /path/to/myskills/skills/myweb-audit ~/.codex/skills/myweb-audit
 ```
 
-For a project-specific user-level install while working from `quantix-rust`, use:
+For a user-level Codex symlink install from a local clone:
 
 ```bash
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
@@ -45,12 +45,12 @@ ln -s /tmp/myskills/skills/function-tree "${CODEX_HOME:-$HOME/.codex}/skills/fun
 SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/function-tree"
 REPO="/path/to/repo"
 
-node "$SKILL_DIR/scripts/ft-governance.cjs" init handlers-split --ref cli/handlers --root "$REPO"
+node "$SKILL_DIR/scripts/ft-governance.cjs" init checkout-flow --ref checkout/payment --root "$REPO"
 node "$SKILL_DIR/scripts/ft-governance.cjs" install-guard --root "$REPO"
-node "$SKILL_DIR/scripts/ft-governance.cjs" new-node handlers-split H3.1 --title "Split trade handlers" --ref cli/handlers/trade --root "$REPO"
-node "$SKILL_DIR/scripts/ft-governance.cjs" observe handlers-split H3.1 --evidence reports/baseline.md --root "$REPO"
-node "$SKILL_DIR/scripts/ft-governance.cjs" authorize handlers-split H3.1 --allowed src/cli/handlers/trade_handler.rs --non-goal "No account changes" --commit-gate "cargo check passes" --closeout-gate "cargo test passes" --root "$REPO"
-node "$SKILL_DIR/scripts/ft-governance.cjs" transition handlers-split H3.1 --to approved-for-implementation --root "$REPO"
+node "$SKILL_DIR/scripts/ft-governance.cjs" new-node checkout-flow C1.1 --title "Add payment confirmation" --ref checkout/payment/confirmation --root "$REPO"
+node "$SKILL_DIR/scripts/ft-governance.cjs" observe checkout-flow C1.1 --evidence reports/baseline.md --root "$REPO"
+node "$SKILL_DIR/scripts/ft-governance.cjs" authorize checkout-flow C1.1 --allowed src/checkout/payment/ --non-goal "No account profile changes" --commit-gate "project build passes" --closeout-gate "project test suite passes" --root "$REPO"
+node "$SKILL_DIR/scripts/ft-governance.cjs" transition checkout-flow C1.1 --to approved-for-implementation --root "$REPO"
 node "$SKILL_DIR/scripts/ft-governance.cjs" scope-check --root "$REPO"
 node "$SKILL_DIR/scripts/ft-governance.cjs" repair --root "$REPO"
 ```

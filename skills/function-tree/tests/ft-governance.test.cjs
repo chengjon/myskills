@@ -46,43 +46,85 @@ function readJson(root, relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), 'utf8'));
 }
 
+function walkFiles(dir) {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  return entries.flatMap((entry) => {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) return walkFiles(fullPath);
+    return fullPath;
+  });
+}
+
+test('public skill docs avoid project-specific bindings', () => {
+  const repoRoot = path.resolve(__dirname, '..', '..', '..');
+  const skillRoot = path.resolve(__dirname, '..');
+  const files = [
+    path.join(repoRoot, 'README.md'),
+    ...walkFiles(skillRoot).filter((file) => {
+      const rel = path.relative(skillRoot, file);
+      return (
+        rel === 'SKILL.md' ||
+        rel.startsWith(`references${path.sep}`) ||
+        rel.startsWith(`templates${path.sep}`)
+      );
+    }),
+  ];
+  const forbidden = [
+    new RegExp(['quan', 'tix'].join(''), 'i'),
+    new RegExp(['Git', 'Nexus'].join('')),
+    new RegExp(`\\b${['car', 'go'].join('')}\\b`),
+    new RegExp(`\\b${['Ru', 'st'].join('')}\\b`),
+    new RegExp(['market', '_cli'].join('')),
+    new RegExp(['handlers', '-split'].join('')),
+    new RegExp(['trade', '_handler'].join('')),
+  ];
+
+  for (const file of files) {
+    const rel = path.relative(repoRoot, file);
+    const haystack = `${rel}\n${fs.readFileSync(file, 'utf8')}`;
+    for (const pattern of forbidden) {
+      assert.doesNotMatch(haystack, pattern, `${rel} should stay project-neutral`);
+    }
+  }
+});
+
 test('new-node creates a planning node and active gate', () => {
   const root = makeRepo();
-  run(['init', 'handlers-split', '--ref', 'cli/handlers', '--root', root], root);
+  run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);
   run([
     'new-node',
-    'handlers-split',
-    'H3.1',
+    'checkout-flow',
+    'C1.1',
     '--title',
-    'Split trade handlers',
+    'Add payment confirmation',
     '--ref',
-    'cli/handlers/trade',
+    'checkout/payment/confirmation',
     '--root',
     root,
   ], root);
 
-  const nodes = readJson(root, '.governance/programs/handlers-split/nodes.json');
+  const nodes = readJson(root, '.governance/programs/checkout-flow/nodes.json');
   assert.equal(nodes.length, 1);
-  assert.equal(nodes[0].id, 'H3.1');
-  assert.equal(nodes[0].title, 'Split trade handlers');
+  assert.equal(nodes[0].id, 'C1.1');
+  assert.equal(nodes[0].title, 'Add payment confirmation');
   assert.equal(nodes[0].status, 'planning');
-  assert.equal(nodes[0].function_tree_ref, 'cli/handlers/trade');
+  assert.equal(nodes[0].function_tree_ref, 'checkout/payment/confirmation');
   assert.equal(nodes[0].source_edits_authorized, false);
 
   const active = readJson(root, '.governance/active-gates.json');
   assert.equal(active.gates.length, 1);
-  assert.equal(active.gates[0].id, 'H3.1');
-  assert.equal(active.gates[0].program, 'handlers-split');
+  assert.equal(active.gates[0].id, 'C1.1');
+  assert.equal(active.gates[0].program, 'checkout-flow');
 });
 
 test('observe records evidence and moves the node to evidence-prepared', () => {
   const root = makeRepo();
-  run(['init', 'handlers-split', '--ref', 'cli/handlers', '--root', root], root);
-  run(['new-node', 'handlers-split', 'H3.1', '--title', 'Split trade handlers', '--ref', 'cli/handlers/trade', '--root', root], root);
+  run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);
+  run(['new-node', 'checkout-flow', 'C1.1', '--title', 'Add payment confirmation', '--ref', 'checkout/payment/confirmation', '--root', root], root);
   run([
     'observe',
-    'handlers-split',
-    'H3.1',
+    'checkout-flow',
+    'C1.1',
     '--evidence',
     'reports/baseline.md',
     '--kind',
@@ -93,7 +135,7 @@ test('observe records evidence and moves the node to evidence-prepared', () => {
     root,
   ], root);
 
-  const [node] = readJson(root, '.governance/programs/handlers-split/nodes.json');
+  const [node] = readJson(root, '.governance/programs/checkout-flow/nodes.json');
   assert.equal(node.status, 'evidence-prepared');
   assert.equal(node.source_edits_authorized, false);
   assert.equal(node.evidence.length, 1);
@@ -104,77 +146,77 @@ test('observe records evidence and moves the node to evidence-prepared', () => {
 
 test('authorize creates a task card and keeps source edits disabled', () => {
   const root = makeRepo();
-  run(['init', 'handlers-split', '--ref', 'cli/handlers', '--root', root], root);
-  run(['new-node', 'handlers-split', 'H3.1', '--title', 'Split trade handlers', '--ref', 'cli/handlers/trade', '--root', root], root);
-  run(['observe', 'handlers-split', 'H3.1', '--evidence', 'reports/baseline.md', '--root', root], root);
+  run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);
+  run(['new-node', 'checkout-flow', 'C1.1', '--title', 'Add payment confirmation', '--ref', 'checkout/payment/confirmation', '--root', root], root);
+  run(['observe', 'checkout-flow', 'C1.1', '--evidence', 'reports/baseline.md', '--root', root], root);
   run([
     'authorize',
-    'handlers-split',
-    'H3.1',
+    'checkout-flow',
+    'C1.1',
     '--allowed',
-    'src/cli/handlers/trade_handler.rs',
+    'src/checkout/payment-service.js',
     '--allowed',
-    'src/cli/handlers/mod.rs',
+    'src/checkout/index.js',
     '--forbidden',
     'tests/**',
     '--non-goal',
-    'Do not change account handlers',
+    'Do not change account settings',
     '--commit-gate',
-    'cargo check passes',
+    'project build passes',
     '--closeout-gate',
-    'cargo test passes',
+    'project test suite passes',
     '--root',
     root,
   ], root);
 
-  const [node] = readJson(root, '.governance/programs/handlers-split/nodes.json');
+  const [node] = readJson(root, '.governance/programs/checkout-flow/nodes.json');
   assert.equal(node.status, 'authorization-prepared');
   assert.equal(node.source_edits_authorized, false);
-  assert.deepEqual(node.allowed_paths, ['src/cli/handlers/trade_handler.rs', 'src/cli/handlers/mod.rs']);
-  assert.deepEqual(node.non_goals, ['Do not change account handlers']);
+  assert.deepEqual(node.allowed_paths, ['src/checkout/payment-service.js', 'src/checkout/index.js']);
+  assert.deepEqual(node.non_goals, ['Do not change account settings']);
 
-  const card = fs.readFileSync(path.join(root, '.governance/programs/handlers-split/cards/H3.1.yaml'), 'utf8');
-  assert.match(card, /Split trade handlers/);
-  assert.match(card, /src\/cli\/handlers\/trade_handler\.rs/);
-  assert.match(card, /cargo test passes/);
+  const card = fs.readFileSync(path.join(root, '.governance/programs/checkout-flow/cards/C1.1.yaml'), 'utf8');
+  assert.match(card, /Add payment confirmation/);
+  assert.match(card, /src\/checkout\/payment-service\.js/);
+  assert.match(card, /project test suite passes/);
 });
 
 test('transition blocks implementation approval when evidence is stale', () => {
   const root = makeRepo();
-  run(['init', 'handlers-split', '--ref', 'cli/handlers', '--root', root], root);
-  run(['new-node', 'handlers-split', 'H3.1', '--title', 'Split trade handlers', '--ref', 'cli/handlers/trade', '--root', root], root);
-  run(['observe', 'handlers-split', 'H3.1', '--evidence', 'reports/baseline.md', '--root', root], root);
-  run(['authorize', 'handlers-split', 'H3.1', '--allowed', 'src/cli/handlers/trade_handler.rs', '--non-goal', 'No account changes', '--commit-gate', 'cargo check passes', '--closeout-gate', 'cargo test passes', '--root', root], root);
+  run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);
+  run(['new-node', 'checkout-flow', 'C1.1', '--title', 'Add payment confirmation', '--ref', 'checkout/payment/confirmation', '--root', root], root);
+  run(['observe', 'checkout-flow', 'C1.1', '--evidence', 'reports/baseline.md', '--root', root], root);
+  run(['authorize', 'checkout-flow', 'C1.1', '--allowed', 'src/checkout/payment-service.js', '--non-goal', 'No account changes', '--commit-gate', 'project build passes', '--closeout-gate', 'project test suite passes', '--root', root], root);
 
   fs.writeFileSync(path.join(root, 'README.md'), 'changed\n');
   git(root, ['add', 'README.md']);
   git(root, ['commit', '-m', 'advance head']);
 
-  const output = runFail(['transition', 'handlers-split', 'H3.1', '--to', 'approved-for-implementation', '--root', root], root);
+  const output = runFail(['transition', 'checkout-flow', 'C1.1', '--to', 'approved-for-implementation', '--root', root], root);
   assert.match(output, /stale evidence/i);
 });
 
 test('transition approves fresh authorization and closeout records closure evidence', () => {
   const root = makeRepo();
-  run(['init', 'handlers-split', '--ref', 'cli/handlers', '--root', root], root);
-  run(['new-node', 'handlers-split', 'H3.1', '--title', 'Split trade handlers', '--ref', 'cli/handlers/trade', '--root', root], root);
-  run(['observe', 'handlers-split', 'H3.1', '--evidence', 'reports/baseline.md', '--root', root], root);
-  run(['authorize', 'handlers-split', 'H3.1', '--allowed', 'src/cli/handlers/trade_handler.rs', '--non-goal', 'No account changes', '--commit-gate', 'cargo check passes', '--closeout-gate', 'cargo test passes', '--root', root], root);
-  run(['transition', 'handlers-split', 'H3.1', '--to', 'approved-for-implementation', '--root', root], root);
+  run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);
+  run(['new-node', 'checkout-flow', 'C1.1', '--title', 'Add payment confirmation', '--ref', 'checkout/payment/confirmation', '--root', root], root);
+  run(['observe', 'checkout-flow', 'C1.1', '--evidence', 'reports/baseline.md', '--root', root], root);
+  run(['authorize', 'checkout-flow', 'C1.1', '--allowed', 'src/checkout/payment-service.js', '--non-goal', 'No account changes', '--commit-gate', 'project build passes', '--closeout-gate', 'project test suite passes', '--root', root], root);
+  run(['transition', 'checkout-flow', 'C1.1', '--to', 'approved-for-implementation', '--root', root], root);
 
-  let [node] = readJson(root, '.governance/programs/handlers-split/nodes.json');
+  let [node] = readJson(root, '.governance/programs/checkout-flow/nodes.json');
   assert.equal(node.status, 'approved-for-implementation');
   assert.equal(node.source_edits_authorized, true);
 
-  run(['transition', 'handlers-split', 'H3.1', '--to', 'implementation-ready', '--note', 'implementation prepared', '--root', root], root);
-  run(['transition', 'handlers-split', 'H3.1', '--to', 'implementation-landed', '--note', 'merged locally', '--root', root], root);
-  run(['closeout', 'handlers-split', 'H3.1', '--summary', 'reports/closeout.md', '--compatibility', 'pub use preserved', '--gate', 'cargo test passes', '--root', root], root);
+  run(['transition', 'checkout-flow', 'C1.1', '--to', 'implementation-ready', '--note', 'implementation prepared', '--root', root], root);
+  run(['transition', 'checkout-flow', 'C1.1', '--to', 'implementation-landed', '--note', 'merged locally', '--root', root], root);
+  run(['closeout', 'checkout-flow', 'C1.1', '--summary', 'reports/closeout.md', '--compatibility', 'public API unchanged', '--gate', 'project test suite passes', '--root', root], root);
 
-  [node] = readJson(root, '.governance/programs/handlers-split/nodes.json');
+  [node] = readJson(root, '.governance/programs/checkout-flow/nodes.json');
   assert.equal(node.status, 'closeout-prepared');
   assert.equal(node.source_edits_authorized, false);
   assert.equal(node.closeout.summary, 'reports/closeout.md');
-  assert.deepEqual(node.closeout.gates, ['cargo test passes']);
+  assert.deepEqual(node.closeout.gates, ['project test suite passes']);
 });
 
 test('install-guard writes a repo-local wrapper without overwriting by default', () => {
@@ -195,14 +237,14 @@ test('install-guard writes a repo-local wrapper without overwriting by default',
 
 test('repair rebuilds active gates from nodes and drops closed nodes', () => {
   const root = makeRepo();
-  run(['init', 'handlers-split', '--ref', 'cli/handlers', '--root', root], root);
-  run(['new-node', 'handlers-split', 'H3.1', '--title', 'Split trade handlers', '--ref', 'cli/handlers/trade', '--root', root], root);
-  run(['new-node', 'handlers-split', 'H3.2', '--title', 'Closed node', '--ref', 'cli/handlers/closed', '--root', root], root);
+  run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);
+  run(['new-node', 'checkout-flow', 'C1.1', '--title', 'Add payment confirmation', '--ref', 'checkout/payment/confirmation', '--root', root], root);
+  run(['new-node', 'checkout-flow', 'C1.2', '--title', 'Closed node', '--ref', 'checkout/payment/closed', '--root', root], root);
 
-  const nodesPath = path.join(root, '.governance/programs/handlers-split/nodes.json');
-  const nodes = readJson(root, '.governance/programs/handlers-split/nodes.json');
+  const nodesPath = path.join(root, '.governance/programs/checkout-flow/nodes.json');
+  const nodes = readJson(root, '.governance/programs/checkout-flow/nodes.json');
   nodes[0].status = 'authorization-prepared';
-  nodes[0].allowed_paths = ['src/cli/handlers/trade_handler.rs'];
+  nodes[0].allowed_paths = ['src/checkout/payment-service.js'];
   nodes[0].non_goals = ['No account changes'];
   nodes[0].next_gate = 'review authorization';
   nodes[1].status = 'closed';
@@ -213,7 +255,7 @@ test('repair rebuilds active gates from nodes and drops closed nodes', () => {
     updated_at: 'stale',
     gates: [
       { program: 'stale', id: 'OLD', status: 'planning' },
-      { program: 'handlers-split', id: 'H3.2', status: 'closed' },
+      { program: 'checkout-flow', id: 'C1.2', status: 'closed' },
     ],
   }, null, 2));
 
@@ -222,12 +264,12 @@ test('repair rebuilds active gates from nodes and drops closed nodes', () => {
 
   const active = readJson(root, '.governance/active-gates.json');
   assert.equal(active.gates.length, 1);
-  assert.equal(active.gates[0].program, 'handlers-split');
-  assert.equal(active.gates[0].id, 'H3.1');
+  assert.equal(active.gates[0].program, 'checkout-flow');
+  assert.equal(active.gates[0].id, 'C1.1');
   assert.equal(active.gates[0].status, 'authorization-prepared');
 
   const md = fs.readFileSync(path.join(root, '.governance/active-gates.md'), 'utf8');
-  assert.match(md, /H3\.1/);
+  assert.match(md, /C1\.1/);
   assert.doesNotMatch(md, /OLD/);
-  assert.doesNotMatch(md, /H3\.2/);
+  assert.doesNotMatch(md, /C1\.2/);
 });

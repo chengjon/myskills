@@ -4,7 +4,7 @@ task:
 
 scope:
   allowed_paths:
-    - "src/path/to/file.rs"
+    - "src/path/to/component"
   forbidden_paths: []
 
 non_goals:
@@ -12,9 +12,9 @@ non_goals:
 
 acceptance:
   commit_gate:
-    - "cargo check passes"
+    - "project build gate passes"
   closeout_gate:
-    - "cargo test passes"
+    - "project test suite passes"
 
 evidence:
   current_head: ""

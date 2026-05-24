@@ -29,7 +29,7 @@ Any active state can move to `blocked` when the blocker is explicit. A blocked n
 ## Evidence Classes
 
 - Baseline evidence: local file paths, `git status`, `git log`, `git diff`, current `HEAD`.
-- Structural evidence: GitNexus query/context/impact/detect_changes when available or required by repo profile.
+- Structural evidence: dependency graphs, call graphs, ownership maps, design docs, or other impact analysis when available or required by the project profile.
 - Runtime evidence: command output summarized into files or reports.
 - Optional anchors: GitHub issue, PR URL, OPENDOG file activity, or external dashboards.
 

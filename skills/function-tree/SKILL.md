@@ -19,7 +19,7 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 ```
 
 3. Read `references/STATE_MACHINE.md` for transition rules before moving a node.
-4. If the repo is `quantix-rust`, read `references/QUANTIX_PROFILE.md` before any implementation gate.
+4. If the repository defines project-local governance instructions, such as `.governance/profile.md` or agent rules, load them before authorization or implementation gates.
 
 ## Commands
 
@@ -44,7 +44,7 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 - Do not use a GitHub issue or PR as the state-machine source of truth. Git commit, branch, and diff evidence are the hard source.
 - Do not hand-edit generated active gate markdown; update JSON and run `sync`.
 - If evidence `current_head` differs from `HEAD`, mark the node stale before implementation.
-- In `quantix-rust`, GitNexus impact and detect_changes gates are mandatory where `QUANTIX_PROFILE.md` says so.
+- Project-specific impact, build, test, or compliance gates must be captured as explicit commit or closeout gates before implementation.
 
 ## Files
 
@@ -59,5 +59,6 @@ The helper creates and validates:
 ## References
 
 - `references/STATE_MACHINE.md` - statuses, transitions, evidence classes, and command workflow.
-- `references/QUANTIX_PROFILE.md` - repo-specific rules for `quantix-rust`.
 - `templates/` - deterministic starter files used by the helper.
+
+Project-specific profiles belong in the consuming repository, not in this public skill.
