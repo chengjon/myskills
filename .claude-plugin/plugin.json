@@ -11,6 +11,6 @@
   "skills": [
     "./skills/plugin-doctor",
     "./skills/review2md",
-    "./skills/function-tree-governance"
+    "./skills/function-tree"
   ]
 }

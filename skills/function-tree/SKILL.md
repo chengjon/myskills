@@ -1,5 +1,5 @@
 ---
-name: function-tree-governance
+name: function-tree
 description: Use when governing FUNCTION_TREE-linked work with /ft commands, evidence collection, authorization gates, scope guards, active implementation gates, or FUNCTION_TREE closeout.
 ---
 

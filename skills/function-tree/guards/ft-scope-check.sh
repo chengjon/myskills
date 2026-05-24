@@ -12,5 +12,5 @@ if [[ -f "$CANDIDATE" ]]; then
   exec node "$CANDIDATE" scope-check "$@"
 fi
 
-echo "ERROR set FT_GOVERNANCE_SCRIPT to function-tree-governance/scripts/ft-governance.cjs" >&2
+echo "ERROR set FT_GOVERNANCE_SCRIPT to function-tree/scripts/ft-governance.cjs" >&2
 exit 2
