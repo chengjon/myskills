@@ -149,7 +149,7 @@ Refresh root `FUNCTION_TREE.md` from current project context and governance stat
 node "$SKILL_DIR/scripts/ft-governance.cjs" doc --root <repo>
 ```
 
-Existing `FUNCTION_TREE.md` content is backed up before changed output is written. Content inside the project-notes marker block is preserved.
+Existing `FUNCTION_TREE.md` content is backed up before changed output is written. Content inside the project-notes marker block is preserved. If an existing document has no marker block yet, its previous body is carried into the new project-notes block as preserved content.
 
 ### `/ft:install-guard`
 

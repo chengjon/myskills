@@ -120,6 +120,8 @@ test('init backs up an existing FUNCTION_TREE.md before updating it', () => {
   const doc = readText(root, 'FUNCTION_TREE.md');
   assert.match(doc, /^# FUNCTION_TREE/m);
   assert.notEqual(doc, '# Existing Tree\n\nlegacy content\n');
+  assert.match(doc, /# Existing Tree/);
+  assert.match(doc, /legacy content/);
 
   const backupDir = path.join(root, '.governance/backups');
   const backups = fs.readdirSync(backupDir).filter((name) => /^FUNCTION_TREE\..+\.md$/.test(name));

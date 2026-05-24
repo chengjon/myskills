@@ -473,7 +473,21 @@ function backupFunctionTreeDoc(root, content) {
 function extractProjectNotes(existing) {
   const match = existing.match(/<!-- function-tree:project-notes:start -->([\s\S]*?)<!-- function-tree:project-notes:end -->/);
   if (match) return match[1].trim() || defaultProjectNotes();
+  const legacy = stripGeneratedFunctionTreeSection(existing).trim();
+  if (legacy) {
+    return [
+      '## Preserved Previous FUNCTION_TREE.md Content',
+      '',
+      'The following content came from the pre-existing `FUNCTION_TREE.md` before function-tree generated sections were added.',
+      '',
+      legacy,
+    ].join('\n');
+  }
   return defaultProjectNotes();
+}
+
+function stripGeneratedFunctionTreeSection(existing) {
+  return existing.replace(/<!-- function-tree:generated:start -->[\s\S]*?<!-- function-tree:generated:end -->/g, '').trim();
 }
 
 function defaultProjectNotes() {

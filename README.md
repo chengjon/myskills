@@ -41,7 +41,7 @@ ln -s /tmp/myskills/skills/function-tree "${CODEX_HOME:-$HOME/.codex}/skills/fun
 
 ### function-tree quick loop
 
-`init` creates `.governance/` and writes or refreshes root `FUNCTION_TREE.md`. Existing `FUNCTION_TREE.md` content is backed up under `.governance/backups/` before changed output is written.
+`init` creates `.governance/` and writes or refreshes root `FUNCTION_TREE.md`. Existing `FUNCTION_TREE.md` content is backed up under `.governance/backups/` before changed output is written; unmarked existing content is also preserved in the project-notes block.
 
 ```bash
 SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/function-tree"
