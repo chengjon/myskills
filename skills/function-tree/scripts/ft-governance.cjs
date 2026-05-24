@@ -52,6 +52,12 @@ function main() {
       case 'closeout':
         closeoutNode(root, parsed.args, parsed.flags);
         break;
+      case 'install-guard':
+        installGuard(root, parsed.flags);
+        break;
+      case 'repair':
+        repairActiveGates(root);
+        break;
       case 'status':
         printStatus(root);
         break;
@@ -123,6 +129,8 @@ function usage(code) {
     '  ft-governance.cjs authorize <program> <node-id> --allowed <path> --non-goal <text> --commit-gate <text> --closeout-gate <text> [--root <repo>]',
     '  ft-governance.cjs transition <program> <node-id> --to <status> [--note <text>] [--blocker <text>] [--unblock-target-state <status>] [--root <repo>]',
     '  ft-governance.cjs closeout <program> <node-id> --summary <path-or-note> [--compatibility <text>] [--gate <text>] [--root <repo>]',
+    '  ft-governance.cjs install-guard [--force] [--root <repo>]',
+    '  ft-governance.cjs repair [--root <repo>]',
     '  ft-governance.cjs status [--root <repo>]',
     '  ft-governance.cjs gate [--verbose] [--root <repo>]',
     '  ft-governance.cjs sync [--root <repo>]',
@@ -412,6 +420,79 @@ function syncActiveGates(root) {
   console.log(`synced ${rel(root, path.join(gov, 'active-gates.md'))}`);
 }
 
+function installGuard(root, flags) {
+  const guardPath = path.join(root, '.governance', 'guards', 'ft-scope-check.sh');
+  if (fs.existsSync(guardPath) && !flags.force) {
+    fail(`${rel(root, guardPath)} already exists; rerun with --force to overwrite`, 2);
+  }
+  const scriptPath = path.join(skillDir(), 'scripts', 'ft-governance.cjs');
+  const content = [
+    '#!/usr/bin/env bash',
+    'set -euo pipefail',
+    '',
+    `FT_GOVERNANCE_SCRIPT=${shellQuote(scriptPath)}`,
+    'export FT_GOVERNANCE_SCRIPT',
+    'exec node "$FT_GOVERNANCE_SCRIPT" scope-check --root "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" "$@"',
+    '',
+  ].join('\n');
+  writeFile(guardPath, content);
+  fs.chmodSync(guardPath, 0o755);
+  console.log([
+    `installed guard: ${rel(root, guardPath)}`,
+    'hook snippet:',
+    '{',
+    '  "hooks": {',
+    '    "PostToolUse": [{',
+    '      "matcher": "Edit|MultiEdit|Write",',
+    '      "command": "bash .governance/guards/ft-scope-check.sh",',
+    '      "description": "Check file edits against active FUNCTION_TREE governance authorization"',
+    '    }]',
+    '  }',
+    '}',
+  ].join('\n'));
+}
+
+function repairActiveGates(root) {
+  const gov = path.join(root, '.governance');
+  ensureDir(gov);
+  const active = {
+    schema_version: 1,
+    updated_at: new Date().toISOString(),
+    gates: [],
+  };
+  const programsDir = path.join(gov, 'programs');
+  if (fs.existsSync(programsDir)) {
+    for (const program of fs.readdirSync(programsDir).sort()) {
+      const nodesPath = path.join(programsDir, program, 'nodes.json');
+      if (!fs.existsSync(nodesPath)) continue;
+      const nodes = loadNodes(nodesPath);
+      for (const node of nodes) {
+        if (!node || !node.id || ['closed', 'archived'].includes(node.status)) continue;
+        active.gates.push(activeGateFromNode(program, node));
+      }
+    }
+  }
+  writeJson(path.join(gov, 'active-gates.json'), active);
+  syncActiveGates(root);
+  console.log(`rebuilt active gates: ${active.gates.length}`);
+}
+
+function activeGateFromNode(program, node) {
+  return {
+    program,
+    id: node.id,
+    title: node.title || node.id,
+    status: node.status || 'planning',
+    source_edits_authorized: node.source_edits_authorized === true,
+    current_blocker: node.blocker_reason || '',
+    next_allowed: node.next_gate || nextGateFor(node.status),
+    function_tree_ref: node.function_tree_ref || '',
+    allowed_paths: list(node.allowed_paths),
+    forbidden_paths: list(node.forbidden_paths),
+    updated_at: node.updated_at || new Date().toISOString(),
+  };
+}
+
 function validateGovernance(root) {
   const errors = [];
   const gov = path.join(root, '.governance');
@@ -660,6 +741,10 @@ function latestEvidenceHead(node) {
 
 function safeFileName(value) {
   return String(value).replace(/[^a-zA-Z0-9._-]/g, '-');
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
 function scopeCheck(root, flags) {

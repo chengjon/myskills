@@ -136,3 +136,25 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" validate
 ## Generated Files
 
 `active-gates.json` is machine-owned. `active-gates.md` is generated from JSON. If they diverge, JSON wins and `sync` must regenerate markdown.
+
+## Maintenance Commands
+
+### `/ft:install-guard`
+
+Install a repo-local wrapper for edit hooks:
+
+```bash
+node "$SKILL_DIR/scripts/ft-governance.cjs" install-guard --root <repo>
+```
+
+This creates `.governance/guards/ft-scope-check.sh`, marks it executable, and prints a hook snippet. Existing guards are not overwritten unless `--force` is passed.
+
+### `/ft:repair`
+
+Rebuild active gates from program nodes:
+
+```bash
+node "$SKILL_DIR/scripts/ft-governance.cjs" repair --root <repo>
+```
+
+This treats `.governance/programs/*/nodes.json` as the source, removes `closed` and `archived` nodes from `active-gates.json`, and regenerates `active-gates.md`.

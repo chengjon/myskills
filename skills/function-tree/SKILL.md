@@ -34,6 +34,8 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 | `/ft:closeout <program> <node-id>` | `closeout <program> <node-id> --summary <path-or-note>` | Record landed summary, compatibility, and passed gates |
 | `/ft:gate [--verbose]` | `gate [--verbose]` | Show active blockers and next allowed action |
 | `/ft:status` | `status` | Summarize governance programs and active gates |
+| `/ft:install-guard` | `install-guard [--force]` | Install `.governance/guards/ft-scope-check.sh` and print hook snippet |
+| `/ft:repair` | `repair` | Rebuild active gates from program nodes and drop closed/archived gates |
 
 ## Hard Rules
 

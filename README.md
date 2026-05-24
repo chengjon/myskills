@@ -46,11 +46,13 @@ SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/function-tree"
 REPO="/path/to/repo"
 
 node "$SKILL_DIR/scripts/ft-governance.cjs" init handlers-split --ref cli/handlers --root "$REPO"
+node "$SKILL_DIR/scripts/ft-governance.cjs" install-guard --root "$REPO"
 node "$SKILL_DIR/scripts/ft-governance.cjs" new-node handlers-split H3.1 --title "Split trade handlers" --ref cli/handlers/trade --root "$REPO"
 node "$SKILL_DIR/scripts/ft-governance.cjs" observe handlers-split H3.1 --evidence reports/baseline.md --root "$REPO"
 node "$SKILL_DIR/scripts/ft-governance.cjs" authorize handlers-split H3.1 --allowed src/cli/handlers/trade_handler.rs --non-goal "No account changes" --commit-gate "cargo check passes" --closeout-gate "cargo test passes" --root "$REPO"
 node "$SKILL_DIR/scripts/ft-governance.cjs" transition handlers-split H3.1 --to approved-for-implementation --root "$REPO"
 node "$SKILL_DIR/scripts/ft-governance.cjs" scope-check --root "$REPO"
+node "$SKILL_DIR/scripts/ft-governance.cjs" repair --root "$REPO"
 ```
 
 ### OpenCode

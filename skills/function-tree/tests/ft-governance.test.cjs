@@ -176,3 +176,58 @@ test('transition approves fresh authorization and closeout records closure evide
   assert.equal(node.closeout.summary, 'reports/closeout.md');
   assert.deepEqual(node.closeout.gates, ['cargo test passes']);
 });
+
+test('install-guard writes a repo-local wrapper without overwriting by default', () => {
+  const root = makeRepo();
+  const output = run(['install-guard', '--root', root], root);
+  assert.match(output, /installed guard/i);
+  assert.match(output, /PostToolUse/);
+
+  const guardPath = path.join(root, '.governance/guards/ft-scope-check.sh');
+  const guard = fs.readFileSync(guardPath, 'utf8');
+  assert.match(guard, /FT_GOVERNANCE_SCRIPT/);
+  assert.match(guard, /ft-governance\.cjs/);
+  assert.equal(fs.statSync(guardPath).mode & 0o111, 0o111);
+
+  const second = runFail(['install-guard', '--root', root], root);
+  assert.match(second, /already exists/i);
+});
+
+test('repair rebuilds active gates from nodes and drops closed nodes', () => {
+  const root = makeRepo();
+  run(['init', 'handlers-split', '--ref', 'cli/handlers', '--root', root], root);
+  run(['new-node', 'handlers-split', 'H3.1', '--title', 'Split trade handlers', '--ref', 'cli/handlers/trade', '--root', root], root);
+  run(['new-node', 'handlers-split', 'H3.2', '--title', 'Closed node', '--ref', 'cli/handlers/closed', '--root', root], root);
+
+  const nodesPath = path.join(root, '.governance/programs/handlers-split/nodes.json');
+  const nodes = readJson(root, '.governance/programs/handlers-split/nodes.json');
+  nodes[0].status = 'authorization-prepared';
+  nodes[0].allowed_paths = ['src/cli/handlers/trade_handler.rs'];
+  nodes[0].non_goals = ['No account changes'];
+  nodes[0].next_gate = 'review authorization';
+  nodes[1].status = 'closed';
+  fs.writeFileSync(nodesPath, `${JSON.stringify(nodes, null, 2)}\n`);
+
+  fs.writeFileSync(path.join(root, '.governance/active-gates.json'), JSON.stringify({
+    schema_version: 1,
+    updated_at: 'stale',
+    gates: [
+      { program: 'stale', id: 'OLD', status: 'planning' },
+      { program: 'handlers-split', id: 'H3.2', status: 'closed' },
+    ],
+  }, null, 2));
+
+  const output = run(['repair', '--root', root], root);
+  assert.match(output, /rebuilt active gates/i);
+
+  const active = readJson(root, '.governance/active-gates.json');
+  assert.equal(active.gates.length, 1);
+  assert.equal(active.gates[0].program, 'handlers-split');
+  assert.equal(active.gates[0].id, 'H3.1');
+  assert.equal(active.gates[0].status, 'authorization-prepared');
+
+  const md = fs.readFileSync(path.join(root, '.governance/active-gates.md'), 'utf8');
+  assert.match(md, /H3\.1/);
+  assert.doesNotMatch(md, /OLD/);
+  assert.doesNotMatch(md, /H3\.2/);
+});
