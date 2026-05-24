@@ -1,0 +1,482 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mystocks.local/schemas/myweb-audit/manifest-schema.json",
+  "title": "MyWeb Audit Batch Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "audit_run_id",
+    "batch_id",
+    "module",
+    "scope",
+    "batch_rationale",
+    "audit_roles",
+    "environment",
+    "verification_plan",
+    "repair_approval",
+    "state_tracking",
+    "artifacts",
+    "resume",
+    "status"
+  ],
+  "properties": {
+    "audit_run_id": {
+      "type": "string",
+      "pattern": "^audit-[0-9]{8}-[0-9]{2}$"
+    },
+    "batch_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "module": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested_by",
+        "pages",
+        "compatibility_redirects"
+      ],
+      "properties": {
+        "requested_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "route",
+              "page_key",
+              "route_class",
+              "canonical_entry"
+            ],
+            "properties": {
+              "route": {
+                "type": "string",
+                "minLength": 1
+              },
+              "page_key": {
+                "type": "string",
+                "pattern": "^[a-z0-9-]+$"
+              },
+              "route_class": {
+                "type": "string",
+                "enum": [
+                  "canonical-page",
+                  "detail-page",
+                  "compatibility-redirect"
+                ]
+              },
+              "canonical_entry": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "compatibility_redirects": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "batch_rationale": {
+      "type": "string",
+      "minLength": 1
+    },
+    "audit_roles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": [
+          "route-inventory",
+          "functional-audit",
+          "data-state-audit",
+          "visual-artdeco-audit",
+          "responsive-a11y-audit"
+        ]
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "frontend_url",
+        "backend_url",
+        "browser_tool",
+        "execution_surface",
+        "frontend_runtime_mode",
+        "assumptions",
+        "fallback_log"
+      ],
+      "properties": {
+        "frontend_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "backend_url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "browser_tool": {
+          "type": "string",
+          "minLength": 1
+        },
+        "execution_surface": {
+          "type": "string",
+          "enum": [
+            "live-audit",
+            "code-review-only",
+            "code-review-plus-targeted-live-verification"
+          ]
+        },
+        "frontend_runtime_mode": {
+          "type": "string",
+          "enum": [
+            "reuse-existing",
+            "start-new"
+          ]
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "fallback_log": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "verification_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verification_strategy",
+        "breakpoints",
+        "required_states",
+        "notes"
+      ],
+      "properties": {
+        "verification_strategy": {
+          "type": "string",
+          "enum": [
+            "full",
+            "chromium-only",
+            "code-review-only",
+            "code-review-plus-targeted-live-verification"
+          ]
+        },
+        "browser_project": {
+          "type": "string"
+        },
+        "breakpoints": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required_states": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "default",
+              "loading",
+              "empty",
+              "error",
+              "disabled",
+              "extreme-data"
+            ]
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "repair_approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "approved_findings",
+        "deferred_findings"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_requested",
+            "pending",
+            "approved",
+            "partial",
+            "deferred"
+          ]
+        },
+        "approved_findings": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "deferred_findings": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "state_tracking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completed_pages",
+        "pending_pages",
+        "fixed_files",
+        "shared_impact",
+        "validation_status",
+        "staged_scope"
+      ],
+      "properties": {
+        "completed_pages": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          }
+        },
+        "pending_pages": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]+$"
+          }
+        },
+        "fixed_files": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "shared_impact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "candidates",
+            "confirmed"
+          ],
+          "properties": {
+            "candidates": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "confirmed": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "validation_status": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "syntax",
+            "typecheck",
+            "pm2",
+            "e2e",
+            "gitnexus_staged_detect"
+          ],
+          "properties": {
+            "syntax": {
+              "type": "string",
+              "minLength": 1
+            },
+            "typecheck": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pm2": {
+              "type": "string",
+              "minLength": 1
+            },
+            "e2e": {
+              "type": "string",
+              "minLength": 1
+            },
+            "gitnexus_staged_detect": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "staged_scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "files",
+            "verdict_origin",
+            "notes"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "isolated-target-files",
+                "mixed-staged-observation-only",
+                "not-started",
+                "not-run"
+              ]
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "verdict_origin": {
+              "type": "string",
+              "enum": [
+                "isolated-batch-only",
+                "mixed-staged-observation",
+                "none"
+              ]
+            },
+            "notes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "page_reports",
+        "raw_findings",
+        "merged_findings",
+        "batch_report",
+        "closeout"
+      ],
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "page_reports": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "raw_findings": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "merged_findings": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repair_approval_package": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "batch_report": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "closeout": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "resume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "last_completed_step",
+        "next_action",
+        "notes"
+      ],
+      "properties": {
+        "last_completed_step": {
+          "type": "string",
+          "minLength": 1
+        },
+        "next_action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "in_progress",
+        "blocked",
+        "deferred",
+        "complete"
+      ]
+    }
+  }
+}

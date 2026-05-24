@@ -1,6 +1,6 @@
 {
   "name": "myskills",
-  "description": "Personal skill collection: plugin-doctor, review2md, function-tree",
+  "description": "Personal skill collection: plugin-doctor, review2md, function-tree, myweb-audit",
   "version": "0.1.0",
   "author": {
     "name": "chengjon"
@@ -11,6 +11,7 @@
   "skills": [
     "./skills/plugin-doctor",
     "./skills/review2md",
-    "./skills/function-tree"
+    "./skills/function-tree",
+    "./skills/myweb-audit"
   ]
 }

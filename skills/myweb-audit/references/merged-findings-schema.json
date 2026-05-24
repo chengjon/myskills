@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mystocks.local/schemas/myweb-audit/merged-findings-schema.json",
+  "title": "MyWeb Audit Merged Finding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "consolidated_issue_id",
+    "severity",
+    "title",
+    "pages",
+    "source_roles",
+    "why_consolidated",
+    "primary_owner",
+    "repair_bucket",
+    "repair_decision",
+    "deferred_reason",
+    "shared_impact_candidate",
+    "cross_page_impact",
+    "dedupe_keys",
+    "verification_scope",
+    "repair_summary",
+    "verification_surface"
+  ],
+  "properties": {
+    "consolidated_issue_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["Blocking", "High", "Medium", "Low"]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "pages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "source_roles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": [
+          "route-inventory",
+          "functional-audit",
+          "data-state-audit",
+          "visual-artdeco-audit",
+          "responsive-a11y-audit"
+        ]
+      }
+    },
+    "why_consolidated": {
+      "type": "string",
+      "minLength": 1
+    },
+    "primary_owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repair_bucket": {
+      "type": "string",
+      "enum": [
+        "fix-now",
+        "fix-with-shared-impact-review",
+        "defer"
+      ]
+    },
+    "repair_decision": {
+      "type": "string",
+      "enum": [
+        "fixed",
+        "deferred",
+        "blocked",
+        "approval-pending"
+      ]
+    },
+    "deferred_reason": {
+      "type": ["string", "null"]
+    },
+    "shared_impact_candidate": {
+      "type": "boolean"
+    },
+    "cross_page_impact": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "dedupe_keys": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^/.+:[a-z-]+:[A-Za-z0-9_-]+$"
+      }
+    },
+    "verification_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["routes", "states", "breakpoints"],
+      "properties": {
+        "routes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "states": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "breakpoints": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "repair_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "notes"],
+      "properties": {
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "verification_surface": {
+      "type": "string",
+      "enum": [
+        "live-audit",
+        "code-review-only",
+        "code-review-plus-targeted-live-verification"
+      ]
+    }
+  }
+}

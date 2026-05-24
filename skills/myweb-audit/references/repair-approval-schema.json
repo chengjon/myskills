@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mystocks.local/schemas/myweb-audit/repair-approval-schema.json",
+  "title": "MyWeb Audit Repair Approval Package",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "consolidated_issue_id",
+    "severity",
+    "affected_routes",
+    "source_roles",
+    "primary_repair_target",
+    "page_scope",
+    "frontend_fixable",
+    "repair_bucket",
+    "changes_truth_sources",
+    "summary",
+    "dependency",
+    "shared_impact",
+    "approval_status"
+  ],
+  "properties": {
+    "consolidated_issue_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["Blocking", "High", "Medium", "Low"]
+    },
+    "affected_routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "source_roles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": [
+          "route-inventory",
+          "functional-audit",
+          "data-state-audit",
+          "visual-artdeco-audit",
+          "responsive-a11y-audit"
+        ]
+      }
+    },
+    "primary_repair_target": {
+      "type": "string",
+      "minLength": 1
+    },
+    "page_scope": {
+      "type": "string",
+      "enum": ["page-local", "shared-impact"]
+    },
+    "frontend_fixable": {
+      "type": "boolean"
+    },
+    "repair_bucket": {
+      "type": "string",
+      "enum": ["fix-now", "fix-with-shared-impact-review", "defer"]
+    },
+    "changes_truth_sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "route_truth",
+        "page_config",
+        "shared_composable",
+        "shared_component",
+        "generated_artifact"
+      ],
+      "properties": {
+        "route_truth": { "type": "boolean" },
+        "page_config": { "type": "boolean" },
+        "shared_composable": { "type": "boolean" },
+        "shared_component": { "type": "boolean" },
+        "generated_artifact": { "type": "boolean" }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dependency": {
+      "type": ["string", "null"]
+    },
+    "shared_impact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate", "basis", "related_routes"],
+      "properties": {
+        "candidate": { "type": "boolean" },
+        "basis": { "type": ["string", "null"] },
+        "related_routes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "approval_status": {
+      "type": "string",
+      "enum": ["pending", "approved", "partial", "deferred"]
+    }
+  }
+}
