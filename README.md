@@ -41,6 +41,8 @@ ln -s /tmp/myskills/skills/function-tree "${CODEX_HOME:-$HOME/.codex}/skills/fun
 
 ### function-tree quick loop
 
+`init` creates `.governance/` and writes or refreshes root `FUNCTION_TREE.md`. Existing `FUNCTION_TREE.md` content is backed up under `.governance/backups/` before changed output is written.
+
 ```bash
 SKILL_DIR="${CODEX_HOME:-$HOME/.codex}/skills/function-tree"
 REPO="/path/to/repo"
@@ -53,6 +55,7 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" authorize checkout-flow C1.1 --allow
 node "$SKILL_DIR/scripts/ft-governance.cjs" transition checkout-flow C1.1 --to approved-for-implementation --root "$REPO"
 node "$SKILL_DIR/scripts/ft-governance.cjs" scope-check --root "$REPO"
 node "$SKILL_DIR/scripts/ft-governance.cjs" repair --root "$REPO"
+node "$SKILL_DIR/scripts/ft-governance.cjs" doc --root "$REPO"
 ```
 
 ### OpenCode

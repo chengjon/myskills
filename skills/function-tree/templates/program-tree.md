@@ -1,6 +1,7 @@
 # {{PROGRAM_NAME}} Governance Tree
 
 > Function tree ref: `{{FT_REF}}`
+> Description: {{DESCRIPTION}}
 > Created at: {{CREATED_AT}}
 > Current head: `{{CURRENT_HEAD}}`
 

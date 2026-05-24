@@ -1,13 +1,13 @@
 ---
 name: function-tree
-description: Use when governing FUNCTION_TREE-linked work with /ft commands, evidence collection, authorization gates, scope guards, active implementation gates, or FUNCTION_TREE closeout.
+description: Use when governing FUNCTION_TREE-linked work, creating or refreshing FUNCTION_TREE.md, using /ft commands, collecting evidence, authorizing scope, checking active gates, or performing FUNCTION_TREE closeout.
 ---
 
 # Function Tree Governance
 
 Use this skill to keep FUNCTION_TREE work serialized, evidence-backed, and scoped. The skill governs work; it does not itself authorize source edits.
 
-Trigger on `/ft`, `FUNCTION_TREE governance`, `function tree gate`, scope authorization, evidence collection, active gates, or FUNCTION_TREE closeout requests.
+Trigger on `/ft`, `FUNCTION_TREE.md`, `FUNCTION_TREE governance`, `function tree gate`, scope authorization, evidence collection, active gates, or FUNCTION_TREE closeout requests.
 
 ## Quick Start
 
@@ -25,7 +25,8 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 
 | User command | Helper command | Purpose |
 |--------------|----------------|---------|
-| `/ft:init <program> --ref <node>` | `init <program> --ref <node>` | Create `.governance/programs/<program>/` and active gate files |
+| `/ft:init <program> --ref <node>` | `init <program> --ref <node>` | Create `.governance/programs/<program>/`, active gate files, and root `FUNCTION_TREE.md` |
+| `/ft:doc` | `doc` | Refresh root `FUNCTION_TREE.md` from project context and governance state |
 | `/ft:new-node <program> <node-id>` | `new-node <program> <node-id> --title <text> --ref <node>` | Add a planning node and active gate |
 | `/ft:observe <program> <node-id> --evidence <path-or-note>` | `observe <program> <node-id> --evidence <path-or-note>` | Record evidence with current `HEAD`; source edits stay unauthorized |
 | `/ft:authorize <program> <node-id>` | `authorize <program> <node-id> --allowed ... --non-goal ...` | Generate task card, scope, non-goals, and acceptance gates |
@@ -43,6 +44,7 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 - Do not skip evidence collection before authorization.
 - Do not use a GitHub issue or PR as the state-machine source of truth. Git commit, branch, and diff evidence are the hard source.
 - Do not hand-edit generated active gate markdown; update JSON and run `sync`.
+- Do not hand-edit the generated section of `FUNCTION_TREE.md`; put durable local notes in its project-notes block and run `doc`.
 - If evidence `current_head` differs from `HEAD`, mark the node stale before implementation.
 - Project-specific impact, build, test, or compliance gates must be captured as explicit commit or closeout gates before implementation.
 
@@ -55,6 +57,8 @@ The helper creates and validates:
 - `.governance/programs/<program>/tree.md`
 - `.governance/programs/<program>/nodes.json`
 - `.governance/programs/<program>/cards/*.yaml`
+- `.governance/backups/FUNCTION_TREE.*.md`
+- `FUNCTION_TREE.md`
 
 ## References
 

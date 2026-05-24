@@ -46,6 +46,10 @@ function readJson(root, relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), 'utf8'));
 }
 
+function readText(root, relativePath) {
+  return fs.readFileSync(path.join(root, relativePath), 'utf8');
+}
+
 function walkFiles(dir) {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   return entries.flatMap((entry) => {
@@ -86,6 +90,60 @@ test('public skill docs avoid project-specific bindings', () => {
       assert.doesNotMatch(haystack, pattern, `${rel} should stay project-neutral`);
     }
   }
+});
+
+test('init creates a project FUNCTION_TREE.md with collected project context and triggers', () => {
+  const root = makeRepo();
+  fs.writeFileSync(path.join(root, 'package.json'), `${JSON.stringify({ name: 'sample-web' }, null, 2)}\n`);
+
+  run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--description', 'Checkout governance', '--root', root], root);
+
+  const doc = readText(root, 'FUNCTION_TREE.md');
+  assert.match(doc, /^# FUNCTION_TREE/m);
+  assert.match(doc, /sample-web/);
+  assert.match(doc, /checkout-flow/);
+  assert.match(doc, /checkout\/payment/);
+  assert.match(doc, /Checkout governance/);
+  assert.match(doc, /Use the `function-tree` skill/i);
+  assert.match(doc, /\/ft:init/);
+  assert.match(doc, /function tree/i);
+  assert.match(doc, /README\.md/);
+  assert.match(doc, new RegExp(git(root, ['rev-parse', 'HEAD'])));
+});
+
+test('init backs up an existing FUNCTION_TREE.md before updating it', () => {
+  const root = makeRepo();
+  fs.writeFileSync(path.join(root, 'FUNCTION_TREE.md'), '# Existing Tree\n\nlegacy content\n');
+
+  run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);
+
+  const doc = readText(root, 'FUNCTION_TREE.md');
+  assert.match(doc, /^# FUNCTION_TREE/m);
+  assert.notEqual(doc, '# Existing Tree\n\nlegacy content\n');
+
+  const backupDir = path.join(root, '.governance/backups');
+  const backups = fs.readdirSync(backupDir).filter((name) => /^FUNCTION_TREE\..+\.md$/.test(name));
+  assert.equal(backups.length, 1);
+  const backup = fs.readFileSync(path.join(backupDir, backups[0]), 'utf8');
+  assert.equal(backup, '# Existing Tree\n\nlegacy content\n');
+});
+
+test('doc refresh preserves project notes and avoids unchanged backups', () => {
+  const root = makeRepo();
+  run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);
+  const docPath = path.join(root, 'FUNCTION_TREE.md');
+  const withNotes = fs.readFileSync(docPath, 'utf8').replace(
+    /<!-- function-tree:project-notes:start -->[\s\S]*?<!-- function-tree:project-notes:end -->/,
+    '<!-- function-tree:project-notes:start -->\n- Keep checkout ownership notes here.\n<!-- function-tree:project-notes:end -->',
+  );
+  fs.writeFileSync(docPath, withNotes);
+
+  const output = run(['doc', '--root', root], root);
+  assert.match(output, /unchanged/);
+  const refreshed = fs.readFileSync(docPath, 'utf8');
+  assert.match(refreshed, /Keep checkout ownership notes here/);
+  const backupDir = path.join(root, '.governance/backups');
+  assert.equal(fs.existsSync(backupDir), false);
 });
 
 test('new-node creates a planning node and active gate', () => {

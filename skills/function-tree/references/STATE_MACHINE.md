@@ -39,11 +39,13 @@ Git is the hard source of truth. Optional anchors cannot drive state alone.
 
 ### `/ft:init`
 
-Creates `.governance/programs/<program>/`, empty `nodes.json`, a human tree, and active gate indexes. Use:
+Creates `.governance/programs/<program>/`, empty `nodes.json`, a human tree, active gate indexes, and root `FUNCTION_TREE.md`. If `FUNCTION_TREE.md` already exists and content changes, the helper writes a timestamped backup to `.governance/backups/` before updating it. Use:
 
 ```bash
 node "$SKILL_DIR/scripts/ft-governance.cjs" init <program> --ref <function-tree-node>
 ```
+
+The generated root document records detected project context, trigger keywords for future skill use, governance programs, active state files, and a preserved project-notes section.
 
 ### `/ft:new-node`
 
@@ -138,6 +140,16 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" validate
 `active-gates.json` is machine-owned. `active-gates.md` is generated from JSON. If they diverge, JSON wins and `sync` must regenerate markdown.
 
 ## Maintenance Commands
+
+### `/ft:doc`
+
+Refresh root `FUNCTION_TREE.md` from current project context and governance state:
+
+```bash
+node "$SKILL_DIR/scripts/ft-governance.cjs" doc --root <repo>
+```
+
+Existing `FUNCTION_TREE.md` content is backed up before changed output is written. Content inside the project-notes marker block is preserved.
 
 ### `/ft:install-guard`
 
