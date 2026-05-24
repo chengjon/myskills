@@ -26,10 +26,12 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 | User command | Helper command | Purpose |
 |--------------|----------------|---------|
 | `/ft:init <program> --ref <node>` | `init <program> --ref <node>` | Create `.governance/programs/<program>/` and active gate files |
-| `/ft:observe <node-id> --evidence <path-or-note>` | `validate` then update node evidence | Record facts only; source edits stay unauthorized |
-| `/ft:authorize <node-id>` | `validate` then prepare task-card | Create allowed paths, non-goals, and gate criteria |
-| `/ft:implement <node-id>` | `scope-check` | Confirm edits remain inside authorization |
-| `/ft:closeout <node-id>` | `validate` and `sync` | Close landed work and refresh active gates |
+| `/ft:new-node <program> <node-id>` | `new-node <program> <node-id> --title <text> --ref <node>` | Add a planning node and active gate |
+| `/ft:observe <program> <node-id> --evidence <path-or-note>` | `observe <program> <node-id> --evidence <path-or-note>` | Record evidence with current `HEAD`; source edits stay unauthorized |
+| `/ft:authorize <program> <node-id>` | `authorize <program> <node-id> --allowed ... --non-goal ...` | Generate task card, scope, non-goals, and acceptance gates |
+| `/ft:transition <program> <node-id> --to <status>` | `transition <program> <node-id> --to <status>` | Move through legal states and block stale implementation approval |
+| `/ft:implement <program> <node-id>` | `scope-check` | Confirm edits remain inside active authorization |
+| `/ft:closeout <program> <node-id>` | `closeout <program> <node-id> --summary <path-or-note>` | Record landed summary, compatibility, and passed gates |
 | `/ft:gate [--verbose]` | `gate [--verbose]` | Show active blockers and next allowed action |
 | `/ft:status` | `status` | Summarize governance programs and active gates |
 

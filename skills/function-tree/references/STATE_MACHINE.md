@@ -45,9 +45,28 @@ Creates `.governance/programs/<program>/`, empty `nodes.json`, a human tree, and
 node "$SKILL_DIR/scripts/ft-governance.cjs" init <program> --ref <function-tree-node>
 ```
 
+### `/ft:new-node`
+
+Create a concrete governance node under an initialized program:
+
+```bash
+node "$SKILL_DIR/scripts/ft-governance.cjs" new-node <program> <node-id> \
+  --title "<title>" \
+  --ref <function-tree-node>
+```
+
+This appends to `nodes.json`, updates the human tree, and creates an active gate in `planning`.
+
 ### `/ft:observe`
 
 Collect facts. Record evidence and `current_head`. Do not edit source files. If implementation pressure appears, move the node to `blocked` or prepare authorization.
+
+```bash
+node "$SKILL_DIR/scripts/ft-governance.cjs" observe <program> <node-id> \
+  --evidence <path-or-note> \
+  --kind baseline \
+  --note "<short note>"
+```
 
 ### `/ft:authorize`
 
@@ -60,6 +79,24 @@ Prepare:
 - `closeout_gate`
 
 No source edit is allowed until the authorization is approved and the node reaches `approved-for-implementation`.
+
+```bash
+node "$SKILL_DIR/scripts/ft-governance.cjs" authorize <program> <node-id> \
+  --allowed <path> \
+  --non-goal "<text>" \
+  --commit-gate "<text>" \
+  --closeout-gate "<text>"
+```
+
+### `/ft:transition`
+
+Move only through legal states:
+
+```bash
+node "$SKILL_DIR/scripts/ft-governance.cjs" transition <program> <node-id> --to approved-for-implementation
+```
+
+Implementation approval fails if the latest evidence `current_head` does not match the current Git `HEAD`.
 
 ### `/ft:implement`
 
@@ -89,8 +126,11 @@ Answer:
 Run:
 
 ```bash
+node "$SKILL_DIR/scripts/ft-governance.cjs" closeout <program> <node-id> \
+  --summary <path-or-note> \
+  --compatibility "<text>" \
+  --gate "<passed gate>"
 node "$SKILL_DIR/scripts/ft-governance.cjs" validate
-node "$SKILL_DIR/scripts/ft-governance.cjs" sync
 ```
 
 ## Generated Files
