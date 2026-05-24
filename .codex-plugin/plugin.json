@@ -1,11 +1,16 @@
 {
   "name": "myskills",
-  "description": "Personal skill collection: plugin-doctor, review2md",
+  "description": "Personal skill collection: plugin-doctor, review2md, function-tree-governance",
   "version": "0.1.0",
   "author": {
     "name": "chengjon"
   },
   "homepage": "https://github.com/chengjon/myskills",
   "repository": "https://github.com/chengjon/myskills",
-  "license": "MIT"
+  "license": "MIT",
+  "skills": [
+    "./skills/plugin-doctor",
+    "./skills/review2md",
+    "./skills/function-tree-governance"
+  ]
 }

@@ -1,13 +1,13 @@
 {
   "name": "chengjon-skills",
-  "description": "Personal skill collection: plugin-doctor, review2md, and more",
+  "description": "Personal skill collection: plugin-doctor, review2md, function-tree-governance, and more",
   "owner": {
     "name": "chengjon"
   },
   "plugins": [
     {
       "name": "myskills",
-      "description": "Plugin doctor, document review, and other productivity skills for AI coding runtimes",
+      "description": "Plugin doctor, document review, FUNCTION_TREE governance, and other productivity skills for AI coding runtimes",
       "version": "0.1.0",
       "source": "./",
       "author": {

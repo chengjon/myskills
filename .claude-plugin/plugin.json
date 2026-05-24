@@ -10,6 +10,7 @@
   "license": "MIT",
   "skills": [
     "./skills/plugin-doctor",
-    "./skills/review2md"
+    "./skills/review2md",
+    "./skills/function-tree-governance"
   ]
 }

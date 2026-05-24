@@ -1,0 +1,21 @@
+task:
+  id: "NODE-ID"
+  title: "Short implementation title"
+
+scope:
+  allowed_paths:
+    - "src/path/to/file.rs"
+  forbidden_paths: []
+
+non_goals:
+  - "Name at least one thing this task must not change"
+
+acceptance:
+  commit_gate:
+    - "cargo check passes"
+  closeout_gate:
+    - "cargo test passes"
+
+evidence:
+  current_head: ""
+  notes: []

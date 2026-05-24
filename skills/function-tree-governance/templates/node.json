@@ -1,0 +1,15 @@
+{
+  "id": "NODE-ID",
+  "title": "Short governance node title",
+  "status": "planning",
+  "function_tree_ref": "path/or/capability",
+  "current_head": "",
+  "source_edits_authorized": false,
+  "evidence": [],
+  "allowed_paths": [],
+  "forbidden_paths": [],
+  "non_goals": [],
+  "next_gate": "collect baseline evidence",
+  "blocker_reason": null,
+  "unblock_target_state": null
+}
