@@ -104,30 +104,53 @@ test('init creates a project FUNCTION_TREE.md with collected project context and
   assert.match(doc, /checkout-flow/);
   assert.match(doc, /checkout\/payment/);
   assert.match(doc, /Checkout governance/);
-  assert.match(doc, /Use the `function-tree` skill/i);
+  assert.match(doc, /## 注册规则/);
+  assert.match(doc, /## 功能全景图/);
+  assert.match(doc, /## 状态注册表/);
+  assert.match(doc, /### 模块\/能力节点/);
+  assert.match(doc, /### CLI\/运营入口节点/);
+  assert.match(doc, /## 模块\/命令证据展开/);
+  assert.match(doc, /## 模块依赖关系/);
   assert.match(doc, /\/ft:init/);
   assert.match(doc, /function tree/i);
   assert.match(doc, /README\.md/);
   assert.match(doc, new RegExp(git(root, ['rev-parse', 'HEAD'])));
+  assert.doesNotMatch(doc, /## Project Snapshot/);
+  assert.doesNotMatch(doc, /## Skill Activation/);
+  assert.doesNotMatch(doc, /## Governance Programs/);
+  assert.doesNotMatch(doc, /## Operating Loop/);
+  assert.doesNotMatch(doc, /## State Files/);
 });
 
 test('init backs up an existing FUNCTION_TREE.md before updating it', () => {
   const root = makeRepo();
-  fs.writeFileSync(path.join(root, 'FUNCTION_TREE.md'), '# Existing Tree\n\nlegacy content\n');
+  fs.writeFileSync(path.join(root, 'FUNCTION_TREE.md'), [
+    '# FUNCTION_TREE',
+    '',
+    '## 注册规则',
+    '',
+    '- legacy rule',
+    '',
+    '## 功能全景图',
+    '',
+    '- legacy feature tree',
+    '',
+  ].join('\n'));
 
   run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);
 
   const doc = readText(root, 'FUNCTION_TREE.md');
   assert.match(doc, /^# FUNCTION_TREE/m);
-  assert.notEqual(doc, '# Existing Tree\n\nlegacy content\n');
-  assert.match(doc, /# Existing Tree/);
-  assert.match(doc, /legacy content/);
+  assert.match(doc, /legacy rule/);
+  assert.match(doc, /legacy feature tree/);
+  assert.doesNotMatch(doc, /Preserved Previous FUNCTION_TREE\.md Content/);
+  assert.doesNotMatch(doc, /## Project Snapshot/);
 
   const backupDir = path.join(root, '.governance/backups');
   const backups = fs.readdirSync(backupDir).filter((name) => /^FUNCTION_TREE\..+\.md$/.test(name));
   assert.equal(backups.length, 1);
   const backup = fs.readFileSync(path.join(backupDir, backups[0]), 'utf8');
-  assert.equal(backup, '# Existing Tree\n\nlegacy content\n');
+  assert.match(backup, /legacy rule/);
 });
 
 test('doc refresh preserves project notes and avoids unchanged backups', () => {

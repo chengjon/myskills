@@ -25,8 +25,8 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 
 | User command | Helper command | Purpose |
 |--------------|----------------|---------|
-| `/ft:init <program> --ref <node>` | `init <program> --ref <node>` | Create `.governance/programs/<program>/`, active gate files, and root `FUNCTION_TREE.md` |
-| `/ft:doc` | `doc` | Refresh root `FUNCTION_TREE.md` from project context and governance state |
+| `/ft:init <program> --ref <node>` | `init <program> --ref <node>` | Create `.governance/programs/<program>/`, active gate files, and a function-tree-style root `FUNCTION_TREE.md` |
+| `/ft:doc` | `doc` | Refresh root `FUNCTION_TREE.md` while preserving function-tree sections and project notes |
 | `/ft:new-node <program> <node-id>` | `new-node <program> <node-id> --title <text> --ref <node>` | Add a planning node and active gate |
 | `/ft:observe <program> <node-id> --evidence <path-or-note>` | `observe <program> <node-id> --evidence <path-or-note>` | Record evidence with current `HEAD`; source edits stay unauthorized |
 | `/ft:authorize <program> <node-id>` | `authorize <program> <node-id> --allowed ... --non-goal ...` | Generate task card, scope, non-goals, and acceptance gates |
@@ -44,7 +44,7 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 - Do not skip evidence collection before authorization.
 - Do not use a GitHub issue or PR as the state-machine source of truth. Git commit, branch, and diff evidence are the hard source.
 - Do not hand-edit generated active gate markdown; update JSON and run `sync`.
-- Do not hand-edit the generated section of `FUNCTION_TREE.md`; put durable local notes in its project-notes block and run `doc`.
+- Do not hand-edit the generated section of `FUNCTION_TREE.md`; it should remain a real feature tree with feature map, status registry, evidence, dependencies, and maintenance rules. Put durable local notes in its project-notes block and run `doc`.
 - If evidence `current_head` differs from `HEAD`, mark the node stale before implementation.
 - Project-specific impact, build, test, or compliance gates must be captured as explicit commit or closeout gates before implementation.
 
