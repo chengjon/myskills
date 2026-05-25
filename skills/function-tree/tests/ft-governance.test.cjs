@@ -155,6 +155,48 @@ test('init creates a project FUNCTION_TREE.md with collected project context and
   assert.doesNotMatch(doc, /## State Files/);
 });
 
+test('init discovers ecosystem commands and source TODO candidates', () => {
+  const root = makeRepo();
+  fs.writeFileSync(path.join(root, 'Cargo.toml'), [
+    '[package]',
+    'name = "portfolio-engine"',
+    'version = "0.1.0"',
+    '',
+    '[[bin]]',
+    'name = "portfolio-worker"',
+    'path = "src/bin/worker.rs"',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(root, 'pyproject.toml'), [
+    '[project]',
+    'name = "portfolio-engine"',
+    '',
+    '[project.scripts]',
+    'portfolio-admin = "portfolio.cli:main"',
+    '',
+    '[tool.pytest.ini_options]',
+    'testpaths = ["tests"]',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(root, 'go.mod'), 'module example.com/portfolio-engine\n');
+  fs.mkdirSync(path.join(root, 'src', 'bin'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'lib.rs'), '// TODO: Add reconciliation dashboard\n');
+  fs.writeFileSync(path.join(root, 'src', 'bin', 'worker.rs'), 'fn main() {}\n');
+  fs.writeFileSync(path.join(root, 'main.go'), 'package main\nfunc main() {}\n');
+
+  run(['init', 'portfolio-governance', '--ref', 'portfolio/root', '--root', root], root);
+
+  const doc = readText(root, 'FUNCTION_TREE.md');
+  assert.match(doc, /cargo test/);
+  assert.match(doc, /cargo run --bin portfolio-worker/);
+  assert.match(doc, /python -m pytest/);
+  assert.match(doc, /portfolio-admin/);
+  assert.ok(doc.includes('go test ./...'));
+  assert.ok(doc.includes('go run .'));
+  assert.match(doc, /Add reconciliation dashboard/);
+  assert.ok(doc.includes('src/lib.rs:1'));
+});
+
 test('init backs up an existing FUNCTION_TREE.md before updating it', () => {
   const root = makeRepo();
   fs.writeFileSync(path.join(root, 'FUNCTION_TREE.md'), [

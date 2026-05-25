@@ -25,8 +25,8 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 
 | User command | Helper command | Purpose |
 |--------------|----------------|---------|
-| `/ft:init <program> --ref <node>` | `init <program> --ref <node>` | Create `.governance/programs/<program>/`, active gate files, and a function-tree-style root `FUNCTION_TREE.md` seeded from README feature lists, source modules, and package scripts |
-| `/ft:doc` | `doc` | Refresh root `FUNCTION_TREE.md` while preserving function-tree sections, project notes, and auto-discovered feature candidates |
+| `/ft:init <program> --ref <node>` | `init <program> --ref <node>` | Create `.governance/programs/<program>/`, active gate files, and a function-tree-style root `FUNCTION_TREE.md` seeded from README feature lists, source modules, source TODOs, and common package/Cargo/Python/Go commands |
+| `/ft:doc` | `doc` | Refresh root `FUNCTION_TREE.md` while preserving function-tree sections, project notes, and auto-discovered feature/roadmap candidates |
 | `/ft:new-node <program> <node-id>` | `new-node <program> <node-id> --title <text> --ref <node>` | Add a planning node and active gate |
 | `/ft:observe <program> <node-id> --evidence <path-or-note>` | `observe <program> <node-id> --evidence <path-or-note>` | Record evidence with current `HEAD`; source edits stay unauthorized |
 | `/ft:authorize <program> <node-id>` | `authorize <program> <node-id> --allowed ... --non-goal ...` | Generate task card, scope, non-goals, and acceptance gates |

@@ -730,7 +730,7 @@ function collectProjectInfo(root) {
     ]),
     sourceRoots,
     featureCandidates: collectFeatureCandidates(root),
-    plannedCandidates: collectPlannedFeatureCandidates(root),
+    plannedCandidates: collectPlannedFeatureCandidates(root, sourceRoots),
     sourceModules: collectSourceModules(root, sourceRoots),
     commandEntries: collectCommandEntries(root),
   };
@@ -772,9 +772,10 @@ function collectFeatureCandidates(root) {
   ], 16);
 }
 
-function collectPlannedFeatureCandidates(root) {
+function collectPlannedFeatureCandidates(root, sourceRoots) {
   return uniqueCandidates([
     ...collectMarkdownCandidates(root, ['README.md', 'ROADMAP.md', 'TODO.md', 'docs/roadmap.md', 'docs/ROADMAP.md', 'docs/todo.md', 'docs/TODO.md'], 'planned'),
+    ...collectSourceTodoCandidates(root, sourceRoots),
   ], 16);
 }
 
@@ -845,6 +846,54 @@ function uniqueCandidates(candidates, limit) {
   return unique;
 }
 
+function collectSourceTodoCandidates(root, sourceRoots) {
+  const candidates = [];
+  for (const file of collectSourceFiles(root, sourceRoots, 240)) {
+    const text = readFile(path.join(root, file));
+    const lines = text.split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      const match = lines[index].match(/\b(?:TODO|FIXME|XXX|HACK)\b[:\-\s]*(.+)$/i);
+      if (!match) continue;
+      const name = cleanMarkdownText(match[1]);
+      if (!isUsefulCandidateName(name)) continue;
+      candidates.push({
+        name,
+        type: 'planned feature',
+        status: '待实现',
+        evidence: `${file}:${index + 1}`,
+        boundary: 'Source TODO; verify intent, owner, and priority before implementation.',
+      });
+      if (candidates.length >= 24) return candidates;
+    }
+  }
+  return candidates;
+}
+
+function collectSourceFiles(root, sourceRoots, limit) {
+  const ignored = new Set(['.git', '.governance', 'node_modules', 'target', 'dist', 'build', 'coverage', '__pycache__']);
+  const sourceFilePattern = /\.(js|jsx|ts|tsx|py|go|rs|java|kt|swift|rb|php|cs|c|cc|cpp|h|hpp)$/i;
+  const files = [];
+
+  function walk(relativeDir) {
+    if (files.length >= limit) return;
+    const absoluteDir = path.join(root, relativeDir);
+    if (!fs.existsSync(absoluteDir) || !fs.statSync(absoluteDir).isDirectory()) return;
+    for (const entry of fs.readdirSync(absoluteDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (files.length >= limit) return;
+      if (entry.name.startsWith('.') || ignored.has(entry.name)) continue;
+      const relativePath = `${relativeDir}/${entry.name}`;
+      if (entry.isDirectory()) {
+        walk(relativePath);
+      } else if (sourceFilePattern.test(entry.name)) {
+        files.push(relativePath);
+      }
+    }
+  }
+
+  for (const sourceRoot of sourceRoots) walk(sourceRoot);
+  return files;
+}
+
 function collectSourceModules(root, sourceRoots) {
   const ignored = new Set(['.git', '.governance', 'node_modules', 'target', 'dist', 'build', 'coverage', '__pycache__']);
   const modules = [];
@@ -864,24 +913,92 @@ function collectSourceModules(root, sourceRoots) {
 
 function collectCommandEntries(root) {
   const commands = [];
+  const pushCommand = (command, purpose, evidence) => {
+    if (commands.some((entry) => entry.command === command)) return;
+    commands.push({ command, purpose, evidence });
+  };
+
   const packagePath = path.join(root, 'package.json');
   if (fs.existsSync(packagePath)) {
     try {
       const pkg = JSON.parse(readFile(packagePath));
       const scripts = pkg && pkg.scripts && typeof pkg.scripts === 'object' ? pkg.scripts : {};
       for (const name of Object.keys(scripts).sort()) {
-        commands.push({
-          command: `npm run ${name}`,
-          purpose: String(scripts[name] || '').slice(0, 80) || 'package script',
-          evidence: 'package.json scripts',
-        });
+        pushCommand(`npm run ${name}`, String(scripts[name] || '').slice(0, 80) || 'package script', 'package.json scripts');
         if (commands.length >= 16) return commands;
       }
     } catch (_) {
       // Invalid package metadata should not block FUNCTION_TREE generation.
     }
   }
+
+  const cargoPath = path.join(root, 'Cargo.toml');
+  if (fs.existsSync(cargoPath)) {
+    const cargo = readFile(cargoPath);
+    pushCommand('cargo build', 'build Rust workspace or crate', 'Cargo.toml');
+    pushCommand('cargo test', 'run Rust tests', 'Cargo.toml');
+    if (fs.existsSync(path.join(root, 'src', 'main.rs')) || fs.existsSync(path.join(root, 'src', 'bin')) || /\[\[bin\]\]/.test(cargo)) {
+      pushCommand('cargo run', 'run Rust binary target', 'Cargo.toml');
+    }
+    for (const name of parseTomlSectionNames(cargo, 'bin')) {
+      pushCommand(`cargo run --bin ${name}`, `run Rust binary ${name}`, 'Cargo.toml [[bin]]');
+      if (commands.length >= 16) return commands;
+    }
+  }
+
+  const pyprojectPath = path.join(root, 'pyproject.toml');
+  if (fs.existsSync(pyprojectPath)) {
+    const pyproject = readFile(pyprojectPath);
+    if (fs.existsSync(path.join(root, 'tests')) || /\[tool\.pytest[^\]]*\]/.test(pyproject)) {
+      pushCommand('python -m pytest', 'run Python tests', 'pyproject.toml');
+    }
+    for (const name of parseTomlTableKeys(pyproject, ['project.scripts', 'tool.poetry.scripts'])) {
+      pushCommand(name, `run Python entrypoint ${name}`, 'pyproject.toml scripts');
+      if (commands.length >= 16) return commands;
+    }
+  }
+
+  const goModPath = path.join(root, 'go.mod');
+  if (fs.existsSync(goModPath)) {
+    pushCommand('go test ./...', 'run Go tests', 'go.mod');
+    if (fs.existsSync(path.join(root, 'main.go')) || fs.existsSync(path.join(root, 'cmd'))) {
+      pushCommand('go run .', 'run Go main package', 'go.mod');
+    }
+  }
+
   return commands;
+}
+
+function parseTomlSectionNames(text, sectionName) {
+  const names = [];
+  let inSection = false;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (/^\s*\[\[/.test(line)) inSection = new RegExp(`^\\s*\\[\\[\\s*${escapeRegExp(sectionName)}\\s*\\]\\]`).test(line);
+    if (!inSection) continue;
+    const match = line.match(/^\s*name\s*=\s*["']([^"']+)["']/);
+    if (match) names.push(match[1]);
+  }
+  return names;
+}
+
+function parseTomlTableKeys(text, tableNames) {
+  const keys = [];
+  let currentTable = '';
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const tableMatch = line.match(/^\s*\[\s*([^\]]+)\s*\]\s*$/);
+    if (tableMatch) {
+      currentTable = tableMatch[1].trim();
+      continue;
+    }
+    if (!tableNames.includes(currentTable)) continue;
+    const keyMatch = line.match(/^\s*([A-Za-z0-9_.-]+)\s*=/);
+    if (keyMatch) keys.push(keyMatch[1]);
+  }
+  return keys;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function detectProjectName(root) {
