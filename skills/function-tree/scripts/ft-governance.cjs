@@ -566,15 +566,33 @@ function renderFunctionTreeDoc(root, context, existingTreeBody, notes) {
 }
 
 function renderDefaultFunctionTreeBody(root, context, info, programs, programRows) {
+  const featureRows = info.featureCandidates.length
+    ? info.featureCandidates.map((feature) => `| ${escapeCell(feature.name)} | ${escapeCell(feature.type)} | ${escapeCell(feature.status)} | ${escapeCell(feature.evidence)}; ${escapeCell(feature.boundary)} |`)
+    : ['| - | feature candidate | 待登记 | Add README/API/product feature bullets, then rerun `doc`. |'];
+  const moduleRows = info.sourceModules.length
+    ? info.sourceModules.map((module) => `| \`${module.path}\` | module | 待核验 | Auto-discovered source module; map to a capability node after review. |`)
+    : [];
   const sourceRows = info.sourceRoots.length
     ? info.sourceRoots.map((source) => `| \`${source}\` | source root | 待登记 | Map modules under this root into capability nodes. |`)
     : ['| - | source root | 待登记 | Add source roots after project structure is known. |'];
   const docRows = info.docs.length
     ? info.docs.map((doc) => `| \`${doc}\` | documentation | 已登记 | Use as evidence when mapping feature ownership. |`)
     : ['| - | documentation | 待登记 | Add architecture, API, or operation docs as evidence. |'];
+  const commandRows = info.commandEntries.length
+    ? info.commandEntries.map((command) => `| \`${command.command}\` | ${escapeCell(command.purpose)} | 待核验 | Evidence: \`${command.evidence}\` |`)
+    : [];
+  const plannedRows = info.plannedCandidates.length
+    ? info.plannedCandidates.map((feature) => `| ${escapeCell(feature.name)} | 待实现 | ${escapeCell(feature.evidence)} | Auto-discovered planned/unfinished item; verify scope and owner before implementation. |`)
+    : ['| - | 待登记 | - | Add planned/unfinished features from roadmap, TODO, or product notes. |'];
   const programLines = programs.length
     ? programs.map((program) => `  - ${program.name} (${program.ref || 'unmapped'}): ${program.description || 'governance program'}`)
     : ['  - Add governance programs with `/ft:init` or `new-node`.'];
+  const featureLines = info.featureCandidates.length
+    ? info.featureCandidates.map((feature) => `  - ${feature.name} (${feature.evidence})`)
+    : ['  - Existing feature candidates: 待登记'];
+  const plannedLines = info.plannedCandidates.length
+    ? info.plannedCandidates.map((feature) => `  - Planned/unfinished: ${feature.name} (${feature.evidence})`)
+    : ['  - Planned/unfinished: 待登记'];
   const programTable = programRows.map((row) => `| ${row.map(escapeCell).join(' | ')} |`);
 
   return [
@@ -591,6 +609,8 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     '## 功能全景图',
     '',
     `- ${info.name}`,
+    ...featureLines,
+    ...plannedLines,
     ...programLines,
     info.sourceRoots.length ? `  - Source roots: ${formatList(info.sourceRoots)}` : '  - Source roots: 待登记',
     info.docs.length ? `  - Documentation: ${formatList(info.docs)}` : '  - Documentation: 待登记',
@@ -602,6 +622,8 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     '| Node | Type | Status | Evidence / Notes |',
     '|------|------|--------|------------------|',
     `| ${escapeCell(info.name)} | project | 已登记 | HEAD: \`${info.head || 'unknown'}\`; root: \`${root}\` |`,
+    ...featureRows,
+    ...moduleRows,
     ...sourceRows,
     ...docRows,
     '',
@@ -615,8 +637,15 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     '| `/ft:observe` | collect baseline evidence | 已实现 | evidence is required before authorization |',
     '| `/ft:authorize` | prepare allowed paths, non-goals, and gates | 已实现 | source edits remain disabled until approval transition |',
     '| `/ft:closeout` | record landed summary and verification gates | 已实现 | close node after review |',
+    ...commandRows,
     '',
     '### 已设计/待实现节点',
+    '',
+    '| 功能节点 | 状态 | 证据 | 边界 |',
+    '|---|---|---|---|',
+    ...plannedRows,
+    '',
+    '### 治理计划/开放节点',
     '',
     '| Program | FUNCTION_TREE ref | Description | Nodes | Active gates | Tree |',
     '|---------|-------------------|-------------|-------|--------------|------|',
@@ -624,6 +653,7 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     '',
     '## 模块/命令证据展开',
     '',
+    ...renderCandidateEvidenceLines(info),
     '- `.governance/programs/<program>/tree.md` records the program entrypoint and FUNCTION_TREE ref.',
     '- `.governance/programs/<program>/nodes.json` records node status, evidence, authorization, and closeout.',
     '- `.governance/programs/<program>/cards/*.yaml` stores generated authorization task cards.',
@@ -663,6 +693,19 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
 }
 
 function collectProjectInfo(root) {
+  const sourceRoots = existingPaths(root, [
+    'src',
+    'app',
+    'lib',
+    'packages',
+    'crates',
+    'services',
+    'cmd',
+    'internal',
+    'tests',
+    'test',
+  ]);
+
   return {
     name: detectProjectName(root),
     head: gitHead(root),
@@ -685,19 +728,160 @@ function collectProjectInfo(root) {
       'CONTRIBUTING.md',
       'docs',
     ]),
-    sourceRoots: existingPaths(root, [
-      'src',
-      'app',
-      'lib',
-      'packages',
-      'crates',
-      'services',
-      'cmd',
-      'internal',
-      'tests',
-      'test',
-    ]),
+    sourceRoots,
+    featureCandidates: collectFeatureCandidates(root),
+    plannedCandidates: collectPlannedFeatureCandidates(root),
+    sourceModules: collectSourceModules(root, sourceRoots),
+    commandEntries: collectCommandEntries(root),
   };
+}
+
+function renderCandidateEvidenceLines(info) {
+  const lines = [];
+  if (info.featureCandidates.length) {
+    lines.push('- Auto-discovered existing feature candidates:');
+    for (const feature of info.featureCandidates) {
+      lines.push(`  - ${feature.name}: ${feature.evidence}`);
+    }
+  }
+  if (info.plannedCandidates.length) {
+    lines.push('- Auto-discovered planned/unfinished feature candidates:');
+    for (const feature of info.plannedCandidates) {
+      lines.push(`  - ${feature.name}: ${feature.evidence}`);
+    }
+  }
+  if (info.sourceModules.length) {
+    lines.push('- Auto-discovered source modules:');
+    for (const module of info.sourceModules) {
+      lines.push(`  - \`${module.path}\``);
+    }
+  }
+  if (info.commandEntries.length) {
+    lines.push('- Auto-discovered project commands:');
+    for (const command of info.commandEntries) {
+      lines.push(`  - \`${command.command}\`: ${command.evidence}`);
+    }
+  }
+  if (lines.length) lines.push('');
+  return lines;
+}
+
+function collectFeatureCandidates(root) {
+  return uniqueCandidates([
+    ...collectMarkdownCandidates(root, ['README.md', 'FEATURES.md', 'docs/README.md', 'docs/features.md', 'docs/FEATURES.md'], 'existing'),
+  ], 16);
+}
+
+function collectPlannedFeatureCandidates(root) {
+  return uniqueCandidates([
+    ...collectMarkdownCandidates(root, ['README.md', 'ROADMAP.md', 'TODO.md', 'docs/roadmap.md', 'docs/ROADMAP.md', 'docs/todo.md', 'docs/TODO.md'], 'planned'),
+  ], 16);
+}
+
+function collectMarkdownCandidates(root, relativePaths, mode) {
+  const candidates = [];
+  for (const relativePath of existingPaths(root, relativePaths)) {
+    const text = readFile(path.join(root, relativePath));
+    let heading = '';
+    for (const line of text.split(/\r?\n/)) {
+      const headingMatch = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/);
+      if (headingMatch) {
+        heading = cleanMarkdownText(headingMatch[1]);
+        continue;
+      }
+      const bulletMatch = line.match(/^\s*(?:[-*+]|\d+[.)])\s+(.+?)\s*$/);
+      if (!bulletMatch || !headingMatchesCandidateMode(heading, mode)) continue;
+      const name = cleanMarkdownText(bulletMatch[1]);
+      if (!isUsefulCandidateName(name)) continue;
+      candidates.push({
+        name,
+        type: mode === 'planned' ? 'planned feature' : 'feature candidate',
+        status: mode === 'planned' ? '待实现' : '待核验',
+        evidence: heading ? `${relativePath} > ${heading}` : relativePath,
+        boundary: mode === 'planned'
+          ? 'Roadmap item; do not treat as implemented until evidence is added.'
+          : 'README-listed capability; verify implementation and owner before marking implemented.',
+      });
+    }
+  }
+  return candidates;
+}
+
+function headingMatchesCandidateMode(heading, mode) {
+  const value = String(heading || '').toLowerCase();
+  const planned = /(roadmap|todo|planned|future|backlog|later|next|计划|规划|路线图|未完成|待实现|后续)/i.test(value);
+  const existing = /(feature|capabilit|function|module|功能|能力|模块|特性|产品)/i.test(value);
+  return mode === 'planned' ? planned : existing && !planned;
+}
+
+function cleanMarkdownText(value) {
+  return String(value || '')
+    .replace(/^\[[ xX]\]\s+/, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[`*_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/[：:。.,，；;]+$/g, '')
+    .trim()
+    .slice(0, 96);
+}
+
+function isUsefulCandidateName(value) {
+  if (!value || value.length < 2) return false;
+  if (/^https?:\/\//i.test(value)) return false;
+  if (/^(todo|tbd|n\/a|none)$/i.test(value)) return false;
+  return true;
+}
+
+function uniqueCandidates(candidates, limit) {
+  const seen = new Set();
+  const unique = [];
+  for (const candidate of candidates) {
+    const key = candidate.name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(candidate);
+    if (unique.length >= limit) break;
+  }
+  return unique;
+}
+
+function collectSourceModules(root, sourceRoots) {
+  const ignored = new Set(['.git', '.governance', 'node_modules', 'target', 'dist', 'build', 'coverage', '__pycache__']);
+  const modules = [];
+  for (const sourceRoot of sourceRoots) {
+    const absoluteRoot = path.join(root, sourceRoot);
+    if (!fs.existsSync(absoluteRoot) || !fs.statSync(absoluteRoot).isDirectory()) continue;
+    for (const entry of fs.readdirSync(absoluteRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (entry.name.startsWith('.') || ignored.has(entry.name)) continue;
+      if (!entry.isDirectory() && !/\.(js|jsx|ts|tsx|py|go|rs|java|kt|swift|rb|php|cs|c|cc|cpp|h|hpp)$/i.test(entry.name)) continue;
+      const relativePath = `${sourceRoot}/${entry.name}${entry.isDirectory() ? '/' : ''}`;
+      modules.push({ path: relativePath });
+      if (modules.length >= 24) return modules;
+    }
+  }
+  return modules;
+}
+
+function collectCommandEntries(root) {
+  const commands = [];
+  const packagePath = path.join(root, 'package.json');
+  if (fs.existsSync(packagePath)) {
+    try {
+      const pkg = JSON.parse(readFile(packagePath));
+      const scripts = pkg && pkg.scripts && typeof pkg.scripts === 'object' ? pkg.scripts : {};
+      for (const name of Object.keys(scripts).sort()) {
+        commands.push({
+          command: `npm run ${name}`,
+          purpose: String(scripts[name] || '').slice(0, 80) || 'package script',
+          evidence: 'package.json scripts',
+        });
+        if (commands.length >= 16) return commands;
+      }
+    } catch (_) {
+      // Invalid package metadata should not block FUNCTION_TREE generation.
+    }
+  }
+  return commands;
 }
 
 function detectProjectName(root) {

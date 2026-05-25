@@ -94,7 +94,30 @@ test('public skill docs avoid project-specific bindings', () => {
 
 test('init creates a project FUNCTION_TREE.md with collected project context and triggers', () => {
   const root = makeRepo();
-  fs.writeFileSync(path.join(root, 'package.json'), `${JSON.stringify({ name: 'sample-web' }, null, 2)}\n`);
+  fs.writeFileSync(path.join(root, 'package.json'), `${JSON.stringify({
+    name: 'sample-web',
+    scripts: {
+      dev: 'vite --host 0.0.0.0',
+      'sync-prices': 'node scripts/sync-prices.js',
+    },
+  }, null, 2)}\n`);
+  fs.writeFileSync(path.join(root, 'README.md'), [
+    '# Sample Web',
+    '',
+    '## Features',
+    '',
+    '- Checkout flow',
+    '- Payment retry',
+    '',
+    '## Roadmap',
+    '',
+    '- Coupon rules',
+    '',
+  ].join('\n'));
+  fs.mkdirSync(path.join(root, 'src', 'checkout'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'src', 'payments'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'checkout', 'index.ts'), 'export const checkout = true;\n');
+  fs.writeFileSync(path.join(root, 'src', 'payments', 'adapter.ts'), 'export const payments = true;\n');
 
   run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--description', 'Checkout governance', '--root', root], root);
 
@@ -118,6 +141,12 @@ test('init creates a project FUNCTION_TREE.md with collected project context and
   assert.match(doc, /\/ft:init/);
   assert.match(doc, /function tree/i);
   assert.match(doc, /README\.md/);
+  assert.match(doc, /Checkout flow/);
+  assert.match(doc, /Payment retry/);
+  assert.match(doc, /Coupon rules/);
+  assert.match(doc, /src\/checkout/);
+  assert.match(doc, /src\/payments/);
+  assert.match(doc, /npm run sync-prices/);
   assert.match(doc, new RegExp(git(root, ['rev-parse', 'HEAD'])));
   assert.doesNotMatch(doc, /## Project Snapshot/);
   assert.doesNotMatch(doc, /## Skill Activation/);
