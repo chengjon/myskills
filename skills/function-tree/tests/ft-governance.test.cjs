@@ -105,6 +105,10 @@ test('init creates a project FUNCTION_TREE.md with collected project context and
   assert.match(doc, /checkout\/payment/);
   assert.match(doc, /Checkout governance/);
   assert.match(doc, /## 注册规则/);
+  assert.match(doc, /已有功能/);
+  assert.match(doc, /计划\/未完成功能/);
+  assert.match(doc, /开发者.*方向指引/);
+  assert.match(doc, /避免.*跑偏/);
   assert.match(doc, /## 功能全景图/);
   assert.match(doc, /## 状态注册表/);
   assert.match(doc, /### 模块\/能力节点/);

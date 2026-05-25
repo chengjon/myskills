@@ -5,7 +5,7 @@ description: Use when governing FUNCTION_TREE-linked work, creating or refreshin
 
 # Function Tree Governance
 
-Use this skill to keep FUNCTION_TREE work serialized, evidence-backed, and scoped. The skill governs work; it does not itself authorize source edits.
+Use this skill to keep FUNCTION_TREE work serialized, evidence-backed, and scoped. `FUNCTION_TREE.md` is the project's current/future feature tree: it records existing features plus planned/unfinished features, giving developers a direction guide so new work can stay aligned and avoid drift. The skill governs work; it does not itself authorize source edits.
 
 Trigger on `/ft`, `FUNCTION_TREE.md`, `FUNCTION_TREE governance`, `function tree gate`, scope authorization, evidence collection, active gates, or FUNCTION_TREE closeout requests.
 
