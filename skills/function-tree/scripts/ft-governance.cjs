@@ -489,7 +489,8 @@ function extractExistingFunctionTreeBody(existing) {
   const generated = existing.match(/<!-- function-tree:generated:start -->([\s\S]*?)<!-- function-tree:generated:end -->/);
   if (generated) {
     const body = stripGeneratedDocPreamble(generated[1]);
-    if (looksLikeFunctionTreeBody(body)) return body;
+    if (looksLikeFunctionTreeBody(body) && !isRefreshableGeneratedFunctionTreeBody(body)) return body;
+    return '';
   }
 
   const withoutGenerated = stripGeneratedFunctionTreeSection(existing)
@@ -524,6 +525,16 @@ function stripGeneratedDocPreamble(value) {
 
 function looksLikeFunctionTreeBody(value) {
   return /##\s+(功能全景图|状态注册表|模块\/命令证据展开|模块依赖关系|Feature Map|Status Registry|Dependency Map)/i.test(String(value || ''));
+}
+
+function isRefreshableGeneratedFunctionTreeBody(value) {
+  const body = String(value || '');
+  return (
+    /\|\s*Node\s*\|\s*Type\s*\|\s*Status\s*\|\s*Evidence\s*\/\s*Notes\s*\|/i.test(body) ||
+    /Auto-discovered (existing feature|planned\/unfinished|source modules|project commands)/i.test(body) ||
+    /Existing feature candidates:/.test(body) ||
+    /Add README\/API\/product feature bullets/.test(body)
+  );
 }
 
 function defaultProjectNotes() {
@@ -566,6 +577,8 @@ function renderFunctionTreeDoc(root, context, existingTreeBody, notes) {
 }
 
 function renderDefaultFunctionTreeBody(root, context, info, programs, programRows) {
+  const logProgram = context.program || (programs[0] && programs[0].name) || 'project-governance';
+  const logRef = context.ref || (programs[0] && programs[0].ref) || 'unmapped';
   const featureRows = info.featureCandidates.length
     ? info.featureCandidates.map((feature) => `| ${escapeCell(feature.name)} | ${escapeCell(feature.type)} | ${escapeCell(feature.status)} | ${escapeCell(feature.evidence)}; ${escapeCell(feature.boundary)} |`)
     : ['| - | feature candidate | 待登记 | Add README/API/product feature bullets, then rerun `doc`. |'];
@@ -676,7 +689,7 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     '',
     '## 更新日志',
     '',
-    `- Initialized by function-tree for ${context.program || 'project-governance'} (${context.ref || 'unmapped'}).`,
+    `- Initialized by function-tree for ${logProgram} (${logRef}).`,
     '',
     '## 开放事项',
     '',

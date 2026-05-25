@@ -246,6 +246,45 @@ test('doc refresh preserves project notes and avoids unchanged backups', () => {
   assert.equal(fs.existsSync(backupDir), false);
 });
 
+test('doc refresh updates generated candidate evidence after project evidence changes', () => {
+  const root = makeRepo();
+  run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);
+  const docPath = path.join(root, 'FUNCTION_TREE.md');
+  const withNotes = fs.readFileSync(docPath, 'utf8').replace(
+    /<!-- function-tree:project-notes:start -->[\s\S]*?<!-- function-tree:project-notes:end -->/,
+    '<!-- function-tree:project-notes:start -->\n- Keep checkout ownership notes here.\n<!-- function-tree:project-notes:end -->',
+  );
+  fs.writeFileSync(docPath, withNotes);
+  fs.writeFileSync(path.join(root, 'README.md'), [
+    '# Checkout',
+    '',
+    '## Features',
+    '',
+    '- Refund workflow',
+    '',
+    '## Roadmap',
+    '',
+    '- Subscription billing',
+    '',
+  ].join('\n'));
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'payments.ts'), '// TODO: Add fraud review queue\n');
+
+  const output = run(['doc', '--root', root], root);
+
+  assert.match(output, /updated FUNCTION_TREE\.md/);
+  assert.match(output, /backup:/);
+  const refreshed = fs.readFileSync(docPath, 'utf8');
+  assert.match(refreshed, /Refund workflow/);
+  assert.match(refreshed, /Subscription billing/);
+  assert.match(refreshed, /Add fraud review queue/);
+  assert.ok(refreshed.includes('src/payments.ts:1'));
+  assert.match(refreshed, /Keep checkout ownership notes here/);
+  const backupDir = path.join(root, '.governance/backups');
+  const backups = fs.readdirSync(backupDir).filter((name) => /^FUNCTION_TREE\..+\.md$/.test(name));
+  assert.equal(backups.length, 1);
+});
+
 test('new-node creates a planning node and active gate', () => {
   const root = makeRepo();
   run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);

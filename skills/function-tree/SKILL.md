@@ -45,6 +45,7 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 - Do not use a GitHub issue or PR as the state-machine source of truth. Git commit, branch, and diff evidence are the hard source.
 - Do not hand-edit generated active gate markdown; update JSON and run `sync`.
 - Do not hand-edit the generated section of `FUNCTION_TREE.md`; it should remain a real feature tree with feature map, status registry, evidence, dependencies, and maintenance rules. Put durable local notes in its project-notes block and run `doc`.
+- `doc` may regenerate skill-managed candidate sections when project evidence changes, but it must preserve project-notes and hand-maintained function-tree bodies.
 - If evidence `current_head` differs from `HEAD`, mark the node stale before implementation.
 - Project-specific impact, build, test, or compliance gates must be captured as explicit commit or closeout gates before implementation.
 
