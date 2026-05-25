@@ -197,6 +197,50 @@ test('init discovers ecosystem commands and source TODO candidates', () => {
   assert.ok(doc.includes('src/lib.rs:1'));
 });
 
+test('init discovers generic task-runner commands', () => {
+  const root = makeRepo();
+  fs.writeFileSync(path.join(root, 'Makefile'), [
+    'smoke:',
+    '\t./scripts/smoke.sh',
+    '.PHONY: smoke clean',
+    'clean:',
+    '\trm -rf dist',
+    '_internal:',
+    '\ttrue',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(root, 'Justfile'), [
+    'release-check:',
+    '    ./scripts/release-check.sh',
+    '',
+    '_private:',
+    '    true',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(root, 'Taskfile.yml'), [
+    'version: "3"',
+    'tasks:',
+    '  deploy:',
+    '    cmds:',
+    '      - ./scripts/deploy.sh',
+    '  _internal:',
+    '    cmds:',
+    '      - true',
+    '',
+  ].join('\n'));
+
+  run(['init', 'ops-governance', '--ref', 'ops/root', '--root', root], root);
+
+  const doc = readText(root, 'FUNCTION_TREE.md');
+  assert.match(doc, /make smoke/);
+  assert.match(doc, /make clean/);
+  assert.match(doc, /just release-check/);
+  assert.match(doc, /task deploy/);
+  assert.doesNotMatch(doc, /make _internal/);
+  assert.doesNotMatch(doc, /just _private/);
+  assert.doesNotMatch(doc, /task _internal/);
+});
+
 test('init backs up an existing FUNCTION_TREE.md before updating it', () => {
   const root = makeRepo();
   fs.writeFileSync(path.join(root, 'FUNCTION_TREE.md'), [

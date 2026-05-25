@@ -979,7 +979,91 @@ function collectCommandEntries(root) {
     }
   }
 
+  for (const target of collectMakeTargets(root)) {
+    pushCommand(`make ${target}`, `run Makefile target ${target}`, 'Makefile');
+    if (commands.length >= 16) return commands;
+  }
+
+  for (const recipe of collectJustRecipes(root)) {
+    pushCommand(`just ${recipe}`, `run Justfile recipe ${recipe}`, 'Justfile');
+    if (commands.length >= 16) return commands;
+  }
+
+  for (const task of collectTaskfileTasks(root)) {
+    pushCommand(`task ${task}`, `run Taskfile task ${task}`, 'Taskfile');
+    if (commands.length >= 16) return commands;
+  }
+
   return commands;
+}
+
+function collectMakeTargets(root) {
+  const makefile = firstExistingPath(root, ['Makefile', 'makefile', 'GNUmakefile']);
+  if (!makefile) return [];
+  const targets = [];
+  for (const line of readFile(makefile).split(/\r?\n/)) {
+    if (/^\s/.test(line) || /^\s*(?:#|$)/.test(line) || /^\s*\./.test(line)) continue;
+    const match = line.match(/^([A-Za-z0-9][A-Za-z0-9_.-]*)\s*:(?![=])/);
+    if (!match || !isPublicTaskName(match[1])) continue;
+    targets.push(match[1]);
+  }
+  return uniqueNames(targets, 16);
+}
+
+function collectJustRecipes(root) {
+  const justfile = firstExistingPath(root, ['Justfile', 'justfile', '.justfile']);
+  if (!justfile) return [];
+  const recipes = [];
+  for (const line of readFile(justfile).split(/\r?\n/)) {
+    if (/^\s/.test(line) || /^\s*(?:#|$|set\s|export\s|alias\s)/.test(line)) continue;
+    const match = line.match(/^@?([A-Za-z0-9][A-Za-z0-9_.-]*)\b[^:=]*:/);
+    if (!match || !isPublicTaskName(match[1])) continue;
+    recipes.push(match[1]);
+  }
+  return uniqueNames(recipes, 16);
+}
+
+function collectTaskfileTasks(root) {
+  const taskfile = firstExistingPath(root, ['Taskfile.yml', 'Taskfile.yaml', 'taskfile.yml', 'taskfile.yaml']);
+  if (!taskfile) return [];
+  const tasks = [];
+  let inTasks = false;
+  for (const line of readFile(taskfile).split(/\r?\n/)) {
+    if (/^\s*tasks\s*:\s*(?:#.*)?$/.test(line)) {
+      inTasks = true;
+      continue;
+    }
+    if (!inTasks) continue;
+    if (/^\S/.test(line) && !/^\s*tasks\s*:/.test(line)) break;
+    const match = line.match(/^\s{2}([A-Za-z0-9][A-Za-z0-9_.-]*)\s*:\s*(?:#.*)?$/);
+    if (!match || !isPublicTaskName(match[1])) continue;
+    tasks.push(match[1]);
+  }
+  return uniqueNames(tasks, 16);
+}
+
+function firstExistingPath(root, relativePaths) {
+  for (const relativePath of relativePaths) {
+    const absolutePath = path.join(root, relativePath);
+    if (fs.existsSync(absolutePath)) return absolutePath;
+  }
+  return '';
+}
+
+function isPublicTaskName(value) {
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(String(value || '')) && !String(value).startsWith('_');
+}
+
+function uniqueNames(values, limit) {
+  const seen = new Set();
+  const names = [];
+  for (const value of values) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    names.push(value);
+    if (names.length >= limit) break;
+  }
+  return names;
 }
 
 function parseTomlSectionNames(text, sectionName) {
