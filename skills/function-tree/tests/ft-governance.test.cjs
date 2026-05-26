@@ -275,6 +275,46 @@ test('init discovers runnable commands from docs while filtering setup noise', (
   assert.doesNotMatch(doc, /\bnpm install\b/);
 });
 
+test('init discovers API and service route entries', () => {
+  const root = makeRepo();
+  fs.writeFileSync(path.join(root, 'openapi.yaml'), [
+    'openapi: 3.0.0',
+    'paths:',
+    '  /health:',
+    '    get:',
+    '      summary: Health check',
+    '  /v1/orders:',
+    '    post:',
+    '      summary: Create order',
+    '',
+  ].join('\n'));
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'server.ts'), [
+    "app.get('/api/users', listUsers);",
+    'router.post("/api/users", createUser);',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(root, 'src', 'api.py'), [
+    '@router.get("/jobs")',
+    'def list_jobs():',
+    '    pass',
+    '',
+  ].join('\n'));
+
+  run(['init', 'api-governance', '--ref', 'api/root', '--root', root], root);
+
+  const doc = readText(root, 'FUNCTION_TREE.md');
+  assert.match(doc, /### API\/服务入口节点/);
+  assert.match(doc, /GET \/health/);
+  assert.match(doc, /POST \/v1\/orders/);
+  assert.match(doc, /GET \/api\/users/);
+  assert.match(doc, /POST \/api\/users/);
+  assert.match(doc, /GET \/jobs/);
+  assert.match(doc, /openapi\.yaml/);
+  assert.match(doc, /src\/server\.ts/);
+  assert.match(doc, /src\/api\.py/);
+});
+
 test('init backs up an existing FUNCTION_TREE.md before updating it', () => {
   const root = makeRepo();
   fs.writeFileSync(path.join(root, 'FUNCTION_TREE.md'), [

@@ -594,6 +594,9 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
   const commandRows = info.commandEntries.length
     ? info.commandEntries.map((command) => `| \`${command.command}\` | ${escapeCell(command.purpose)} | 待核验 | Evidence: \`${command.evidence}\` |`)
     : [];
+  const apiRows = info.apiEntries.length
+    ? info.apiEntries.map((entry) => `| \`${entry.method} ${entry.path}\` | ${escapeCell(entry.source)} | 待核验 | Evidence: \`${entry.evidence}\` |`)
+    : ['| - | API route | 待登记 | Add OpenAPI specs or route definitions to register service/API entrypoints. |'];
   const plannedRows = info.plannedCandidates.length
     ? info.plannedCandidates.map((feature) => `| ${escapeCell(feature.name)} | 待实现 | ${escapeCell(feature.evidence)} | Auto-discovered planned/unfinished item; verify scope and owner before implementation. |`)
     : ['| - | 待登记 | - | Add planned/unfinished features from roadmap, TODO, or product notes. |'];
@@ -651,6 +654,12 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     '| `/ft:authorize` | prepare allowed paths, non-goals, and gates | 已实现 | source edits remain disabled until approval transition |',
     '| `/ft:closeout` | record landed summary and verification gates | 已实现 | close node after review |',
     ...commandRows,
+    '',
+    '### API/服务入口节点',
+    '',
+    '| Endpoint | Source | Status | Notes |',
+    '|----------|--------|--------|-------|',
+    ...apiRows,
     '',
     '### 已设计/待实现节点',
     '',
@@ -746,6 +755,7 @@ function collectProjectInfo(root) {
     plannedCandidates: collectPlannedFeatureCandidates(root, sourceRoots),
     sourceModules: collectSourceModules(root, sourceRoots),
     commandEntries: collectCommandEntries(root),
+    apiEntries: collectApiEntries(root, sourceRoots),
   };
 }
 
@@ -773,6 +783,12 @@ function renderCandidateEvidenceLines(info) {
     lines.push('- Auto-discovered project commands:');
     for (const command of info.commandEntries) {
       lines.push(`  - \`${command.command}\`: ${command.evidence}`);
+    }
+  }
+  if (info.apiEntries.length) {
+    lines.push('- Auto-discovered API/service routes:');
+    for (const entry of info.apiEntries) {
+      lines.push(`  - \`${entry.method} ${entry.path}\`: ${entry.evidence}`);
     }
   }
   if (lines.length) lines.push('');
@@ -905,6 +921,122 @@ function collectSourceFiles(root, sourceRoots, limit) {
 
   for (const sourceRoot of sourceRoots) walk(sourceRoot);
   return files;
+}
+
+function collectApiEntries(root, sourceRoots) {
+  return uniqueApiEntries([
+    ...collectOpenApiEntries(root),
+    ...collectSourceRouteEntries(root, sourceRoots),
+  ], 32);
+}
+
+function collectOpenApiEntries(root) {
+  const entries = [];
+  const specs = existingPaths(root, [
+    'openapi.json',
+    'openapi.yaml',
+    'openapi.yml',
+    'docs/openapi.json',
+    'docs/openapi.yaml',
+    'docs/openapi.yml',
+    'docs/api/openapi.json',
+    'docs/api/openapi.yaml',
+    'docs/api/openapi.yml',
+  ]);
+
+  for (const spec of specs) {
+    const absolutePath = path.join(root, spec);
+    if (/\.json$/i.test(spec)) {
+      try {
+        const parsed = JSON.parse(readFile(absolutePath));
+        const paths = parsed && parsed.paths && typeof parsed.paths === 'object' ? parsed.paths : {};
+        for (const routePath of Object.keys(paths).sort()) {
+          const methods = paths[routePath] && typeof paths[routePath] === 'object' ? paths[routePath] : {};
+          for (const method of Object.keys(methods).sort()) {
+            if (isHttpMethod(method)) entries.push(apiEntry(method, routePath, spec, 'OpenAPI'));
+          }
+        }
+      } catch (_) {
+        // Invalid JSON should not block FUNCTION_TREE generation.
+      }
+      continue;
+    }
+
+    let currentPath = '';
+    for (const line of readFile(absolutePath).split(/\r?\n/)) {
+      const pathMatch = line.match(/^\s{1,8}["']?(\/[^"':]+)["']?\s*:\s*(?:#.*)?$/);
+      if (pathMatch) {
+        currentPath = pathMatch[1];
+        continue;
+      }
+      const methodMatch = line.match(/^\s{2,10}(get|post|put|patch|delete|options|head)\s*:\s*(?:#.*)?$/i);
+      if (currentPath && methodMatch) entries.push(apiEntry(methodMatch[1], currentPath, spec, 'OpenAPI'));
+    }
+  }
+  return entries;
+}
+
+function collectSourceRouteEntries(root, sourceRoots) {
+  const entries = [];
+  for (const file of collectSourceFiles(root, sourceRoots, 400)) {
+    const lines = readFile(path.join(root, file)).split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      for (const match of sourceRouteMatches(lines[index])) {
+        entries.push(apiEntry(match.method, match.path, `${file}:${index + 1}`, 'source route'));
+        if (entries.length >= 64) return entries;
+      }
+    }
+  }
+  return entries;
+}
+
+function sourceRouteMatches(line) {
+  const matches = [];
+  const patterns = [
+    /\b(?:app|router|server|fastify)\s*\.\s*(get|post|put|patch|delete|options|head)\s*\(\s*['"`]([^'"`]+)['"`]/ig,
+    /@\s*(?:app|router|api)\s*\.\s*(get|post|put|patch|delete|options|head)\s*\(\s*['"`]([^'"`]+)['"`]/ig,
+  ];
+  for (const pattern of patterns) {
+    for (const match of line.matchAll(pattern)) {
+      if (isUsefulApiPath(match[2])) matches.push({ method: match[1], path: match[2] });
+    }
+  }
+
+  const axumMatch = line.match(/\.route\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*(get|post|put|patch|delete|options|head)\s*\(/i);
+  if (axumMatch && isUsefulApiPath(axumMatch[1])) matches.push({ method: axumMatch[2], path: axumMatch[1] });
+  return matches;
+}
+
+function apiEntry(method, routePath, evidence, source) {
+  return {
+    method: String(method || '').toUpperCase(),
+    path: String(routePath || '').trim(),
+    evidence,
+    source,
+  };
+}
+
+function isHttpMethod(value) {
+  return /^(get|post|put|patch|delete|options|head)$/i.test(String(value || ''));
+}
+
+function isUsefulApiPath(value) {
+  const routePath = String(value || '').trim();
+  return routePath.startsWith('/') && routePath.length > 1 && !routePath.includes('${');
+}
+
+function uniqueApiEntries(entries, limit) {
+  const seen = new Set();
+  const unique = [];
+  for (const entry of entries) {
+    if (!entry.method || !isUsefulApiPath(entry.path)) continue;
+    const key = `${entry.method} ${entry.path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(entry);
+    if (unique.length >= limit) break;
+  }
+  return unique;
 }
 
 function collectSourceModules(root, sourceRoots) {
