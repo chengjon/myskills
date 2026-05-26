@@ -315,6 +315,47 @@ test('init discovers API and service route entries', () => {
   assert.match(doc, /src\/api\.py/);
 });
 
+test('init discovers frontend page and UI route entries', () => {
+  const root = makeRepo();
+  fs.mkdirSync(path.join(root, 'app', 'dashboard'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'app', 'users', '[id]'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'pages'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'src', 'routes', 'admin'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'app', 'page.tsx'), 'export default function Home() { return null; }\n');
+  fs.writeFileSync(
+    path.join(root, 'app', 'dashboard', 'page.tsx'),
+    'export default function Dashboard() { return null; }\n',
+  );
+  fs.writeFileSync(
+    path.join(root, 'app', 'users', '[id]', 'page.tsx'),
+    'export default function User() { return null; }\n',
+  );
+  fs.writeFileSync(path.join(root, 'pages', 'settings.tsx'), 'export default function Settings() { return null; }\n');
+  fs.writeFileSync(path.join(root, 'src', 'routes', 'admin', '+page.svelte'), '<h1>Admin</h1>\n');
+  fs.writeFileSync(path.join(root, 'src', 'router.tsx'), [
+    '<Route path="/reports" element={<Reports />} />',
+    "{ path: '/billing', element: <Billing /> },",
+    '',
+  ].join('\n'));
+
+  run(['init', 'ui-governance', '--ref', 'ui/root', '--root', root], root);
+
+  const doc = readText(root, 'FUNCTION_TREE.md');
+  assert.match(doc, /### UI\/页面入口节点/);
+  assert.ok(doc.includes('`/`'));
+  assert.match(doc, /\/dashboard/);
+  assert.match(doc, /\/users\/\[id\]/);
+  assert.match(doc, /\/settings/);
+  assert.match(doc, /\/admin/);
+  assert.match(doc, /\/reports/);
+  assert.match(doc, /\/billing/);
+  assert.match(doc, /app\/dashboard\/page\.tsx/);
+  assert.match(doc, /pages\/settings\.tsx/);
+  assert.match(doc, /src\/routes\/admin\/\+page\.svelte/);
+  assert.match(doc, /src\/router\.tsx/);
+});
+
 test('init backs up an existing FUNCTION_TREE.md before updating it', () => {
   const root = makeRepo();
   fs.writeFileSync(path.join(root, 'FUNCTION_TREE.md'), [

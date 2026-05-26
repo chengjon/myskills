@@ -594,6 +594,9 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
   const commandRows = info.commandEntries.length
     ? info.commandEntries.map((command) => `| \`${command.command}\` | ${escapeCell(command.purpose)} | 待核验 | Evidence: \`${command.evidence}\` |`)
     : [];
+  const uiRows = info.uiEntries.length
+    ? info.uiEntries.map((entry) => `| \`${entry.route}\` | ${escapeCell(entry.source)} | 待核验 | Evidence: \`${entry.evidence}\` |`)
+    : ['| - | UI route | 待登记 | Add frontend page files or router definitions to register UI entrypoints. |'];
   const apiRows = info.apiEntries.length
     ? info.apiEntries.map((entry) => `| \`${entry.method} ${entry.path}\` | ${escapeCell(entry.source)} | 待核验 | Evidence: \`${entry.evidence}\` |`)
     : ['| - | API route | 待登记 | Add OpenAPI specs or route definitions to register service/API entrypoints. |'];
@@ -654,6 +657,12 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     '| `/ft:authorize` | prepare allowed paths, non-goals, and gates | 已实现 | source edits remain disabled until approval transition |',
     '| `/ft:closeout` | record landed summary and verification gates | 已实现 | close node after review |',
     ...commandRows,
+    '',
+    '### UI/页面入口节点',
+    '',
+    '| Route | Source | Status | Notes |',
+    '|-------|--------|--------|-------|',
+    ...uiRows,
     '',
     '### API/服务入口节点',
     '',
@@ -755,6 +764,7 @@ function collectProjectInfo(root) {
     plannedCandidates: collectPlannedFeatureCandidates(root, sourceRoots),
     sourceModules: collectSourceModules(root, sourceRoots),
     commandEntries: collectCommandEntries(root),
+    uiEntries: collectUiEntries(root, sourceRoots),
     apiEntries: collectApiEntries(root, sourceRoots),
   };
 }
@@ -783,6 +793,12 @@ function renderCandidateEvidenceLines(info) {
     lines.push('- Auto-discovered project commands:');
     for (const command of info.commandEntries) {
       lines.push(`  - \`${command.command}\`: ${command.evidence}`);
+    }
+  }
+  if (info.uiEntries.length) {
+    lines.push('- Auto-discovered UI/page routes:');
+    for (const entry of info.uiEntries) {
+      lines.push(`  - \`${entry.route}\`: ${entry.evidence}`);
     }
   }
   if (info.apiEntries.length) {
@@ -921,6 +937,152 @@ function collectSourceFiles(root, sourceRoots, limit) {
 
   for (const sourceRoot of sourceRoots) walk(sourceRoot);
   return files;
+}
+
+function collectUiEntries(root, sourceRoots) {
+  return uniqueUiEntries([
+    ...collectFileBasedUiEntries(root),
+    ...collectSourceUiRouteEntries(root, sourceRoots),
+  ], 32);
+}
+
+function collectFileBasedUiEntries(root) {
+  const entries = [];
+  for (const file of collectFilesUnder(root, 'app', 200, (name) => /^page\.(js|jsx|ts|tsx|mdx)$/i.test(name))) {
+    const route = nextAppRouteFromFile(file);
+    if (isUsefulUiRoute(route)) entries.push(uiEntry(route, file, 'Next app router'));
+  }
+  for (const file of collectFilesUnder(root, 'pages', 200, (name) => /\.(js|jsx|ts|tsx|mdx)$/i.test(name))) {
+    const route = nextPagesRouteFromFile(file);
+    if (isUsefulUiRoute(route)) entries.push(uiEntry(route, file, 'Next pages router'));
+  }
+  for (const file of collectFilesUnder(root, 'src/routes', 200, (name) => /^\+page\.(svelte|js|ts)$/i.test(name))) {
+    const route = svelteKitRouteFromFile(file);
+    if (isUsefulUiRoute(route)) entries.push(uiEntry(route, file, 'SvelteKit route'));
+  }
+  return entries;
+}
+
+function collectFilesUnder(root, relativeDir, limit, acceptFileName) {
+  const ignored = new Set(['.git', '.governance', 'node_modules', 'target', 'dist', 'build', 'coverage', '__pycache__']);
+  const files = [];
+
+  function walk(currentDir) {
+    if (files.length >= limit) return;
+    const absoluteDir = path.join(root, currentDir);
+    if (!fs.existsSync(absoluteDir) || !fs.statSync(absoluteDir).isDirectory()) return;
+    for (const entry of fs.readdirSync(absoluteDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (files.length >= limit) return;
+      if (entry.name.startsWith('.') || ignored.has(entry.name)) continue;
+      const relativePath = `${currentDir}/${entry.name}`;
+      if (entry.isDirectory()) {
+        walk(relativePath);
+      } else if (acceptFileName(entry.name)) {
+        files.push(relativePath);
+      }
+    }
+  }
+
+  walk(relativeDir);
+  return files;
+}
+
+function nextAppRouteFromFile(relativePath) {
+  const parts = relativePath.split('/').slice(1);
+  const fileName = parts.pop();
+  if (!fileName || !/^page\./i.test(fileName)) return '';
+  const routeParts = parts.filter((part) => !isPathlessUiSegment(part));
+  return normalizeUiRoute(routeParts.length ? routeParts.join('/') : '/');
+}
+
+function nextPagesRouteFromFile(relativePath) {
+  const parts = relativePath.split('/').slice(1);
+  if (!parts.length || /^api$/i.test(parts[0])) return '';
+  const fileName = parts.pop() || '';
+  const pageName = fileName.replace(/\.(js|jsx|ts|tsx|mdx)$/i, '');
+  if (!pageName || pageName.startsWith('_')) return '';
+  if (pageName !== 'index') parts.push(pageName);
+  if (parts.some((part) => part.startsWith('_'))) return '';
+  return normalizeUiRoute(parts.length ? parts.join('/') : '/');
+}
+
+function svelteKitRouteFromFile(relativePath) {
+  const parts = relativePath.split('/').slice(2);
+  const fileName = parts.pop();
+  if (!fileName || !/^\+page\./i.test(fileName)) return '';
+  const routeParts = parts.filter((part) => !isPathlessUiSegment(part));
+  return normalizeUiRoute(routeParts.length ? routeParts.join('/') : '/');
+}
+
+function isPathlessUiSegment(part) {
+  return /^\(.+\)$/.test(String(part || ''));
+}
+
+function collectSourceUiRouteEntries(root, sourceRoots) {
+  const entries = [];
+  for (const file of collectSourceFiles(root, sourceRoots, 400)) {
+    const lines = readFile(path.join(root, file)).split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      for (const route of sourceUiRouteMatches(lines[index])) {
+        entries.push(uiEntry(route, `${file}:${index + 1}`, 'source router'));
+        if (entries.length >= 64) return entries;
+      }
+    }
+  }
+  return entries;
+}
+
+function sourceUiRouteMatches(line) {
+  const matches = [];
+  const patterns = [
+    /<Route\b[^>]*\bpath\s*=\s*["']([^"']+)["']/g,
+    /\bpath\s*:\s*["']([^"']+)["']/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of line.matchAll(pattern)) {
+      if (isUsefulUiRoute(match[1])) matches.push(match[1]);
+    }
+  }
+  return matches;
+}
+
+function uiEntry(route, evidence, source) {
+  return {
+    route: normalizeUiRoute(route),
+    evidence,
+    source,
+  };
+}
+
+function normalizeUiRoute(value) {
+  let route = String(value || '').trim();
+  if (!route) return '';
+  if (!route.startsWith('/')) route = `/${route}`;
+  route = route.replace(/\/+/g, '/');
+  if (route.length > 1) route = route.replace(/\/$/, '');
+  return route || '/';
+}
+
+function isUsefulUiRoute(value) {
+  const route = normalizeUiRoute(value);
+  return route.startsWith('/')
+    && !/^\/api(?:\/|$)/i.test(route)
+    && !route.includes('*')
+    && !route.includes('${');
+}
+
+function uniqueUiEntries(entries, limit) {
+  const seen = new Set();
+  const unique = [];
+  for (const entry of entries) {
+    if (!entry.route || !isUsefulUiRoute(entry.route)) continue;
+    const key = normalizeUiRoute(entry.route);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push({ ...entry, route: key });
+    if (unique.length >= limit) break;
+  }
+  return unique;
 }
 
 function collectApiEntries(root, sourceRoots) {
