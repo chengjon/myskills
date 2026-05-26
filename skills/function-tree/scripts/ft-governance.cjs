@@ -942,6 +942,7 @@ function collectSourceFiles(root, sourceRoots, limit) {
 function collectUiEntries(root, sourceRoots) {
   return uniqueUiEntries([
     ...collectFileBasedUiEntries(root),
+    ...collectNavigationUiEntries(root, sourceRoots),
     ...collectSourceUiRouteEntries(root, sourceRoots),
   ], 32);
 }
@@ -1016,6 +1017,40 @@ function svelteKitRouteFromFile(relativePath) {
 
 function isPathlessUiSegment(part) {
   return /^\(.+\)$/.test(String(part || ''));
+}
+
+function collectNavigationUiEntries(root, sourceRoots) {
+  const entries = [];
+  for (const file of collectSourceFiles(root, sourceRoots, 400)) {
+    if (!isNavigationUiFile(file)) continue;
+    const lines = readFile(path.join(root, file)).split(/\r?\n/);
+    for (let index = 0; index < lines.length; index += 1) {
+      for (const route of sourceNavigationRouteMatches(lines[index])) {
+        entries.push(uiEntry(route, `${file}:${index + 1}`, 'navigation/menu'));
+        if (entries.length >= 64) return entries;
+      }
+    }
+  }
+  return entries;
+}
+
+function isNavigationUiFile(file) {
+  return /(^|[._/-])(nav|navigation|menu|sidebar|sidenav|side-nav|routes?|links?|tabs?)([._/-]|$)/i.test(String(file || ''));
+}
+
+function sourceNavigationRouteMatches(line) {
+  const matches = [];
+  const patterns = [
+    /\b(?:href|to|url)\s*:\s*["']([^"']+)["']/g,
+    /<(?:Link|NavLink|a)\b[^>]*\b(?:href|to)\s*=\s*["']([^"']+)["']/g,
+    /\brouterLink\s*=\s*["']([^"']+)["']/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of line.matchAll(pattern)) {
+      if (isUsefulUiRoute(match[1])) matches.push(match[1]);
+    }
+  }
+  return matches;
 }
 
 function collectSourceUiRouteEntries(root, sourceRoots) {

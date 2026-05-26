@@ -356,6 +356,41 @@ test('init discovers frontend page and UI route entries', () => {
   assert.match(doc, /src\/router\.tsx/);
 });
 
+test('init discovers navigation and menu links as UI entries', () => {
+  const root = makeRepo();
+  fs.mkdirSync(path.join(root, 'src', 'components'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'navigation.ts'), [
+    'export const mainNav = [',
+    "  { title: 'Portfolio', href: '/portfolio' },",
+    "  { label: 'Risk Center', to: '/risk' },",
+    "  { name: 'Billing', url: '/billing' },",
+    "  { title: 'External Docs', href: 'https://example.com/docs' },",
+    "  { title: 'Users API', href: '/api/users' },",
+    '];',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(root, 'src', 'components', 'sidebar.tsx'), [
+    'export function Sidebar() {',
+    '  return <nav><Link href="/settings">Settings</Link><NavLink to="/reports">Reports</NavLink></nav>;',
+    '}',
+    '',
+  ].join('\n'));
+
+  run(['init', 'nav-governance', '--ref', 'ui/navigation', '--root', root], root);
+
+  const doc = readText(root, 'FUNCTION_TREE.md');
+  assert.match(doc, /### UI\/页面入口节点/);
+  assert.match(doc, /\/portfolio/);
+  assert.match(doc, /\/risk/);
+  assert.match(doc, /\/billing/);
+  assert.match(doc, /\/settings/);
+  assert.match(doc, /\/reports/);
+  assert.match(doc, /src\/navigation\.ts/);
+  assert.match(doc, /src\/components\/sidebar\.tsx/);
+  assert.doesNotMatch(doc, /https:\/\/example\.com\/docs/);
+  assert.doesNotMatch(doc, /\/api\/users/);
+});
+
 test('init backs up an existing FUNCTION_TREE.md before updating it', () => {
   const root = makeRepo();
   fs.writeFileSync(path.join(root, 'FUNCTION_TREE.md'), [
