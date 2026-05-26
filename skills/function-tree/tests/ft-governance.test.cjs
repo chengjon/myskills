@@ -241,6 +241,40 @@ test('init discovers generic task-runner commands', () => {
   assert.doesNotMatch(doc, /task _internal/);
 });
 
+test('init discovers runnable commands from docs while filtering setup noise', () => {
+  const root = makeRepo();
+  fs.writeFileSync(path.join(root, 'README.md'), [
+    '# Demo',
+    '',
+    '## Build & Run',
+    '',
+    '```bash',
+    'cd demo',
+    'export API_TOKEN=secret',
+    'npm install',
+    'pnpm test',
+    'docker compose up -d',
+    'cargo run -- serve --port 3000',
+    '```',
+    '',
+    '## Usage',
+    '',
+    'Run `python -m demo.cli reconcile --dry-run` before release.',
+    '',
+  ].join('\n'));
+
+  run(['init', 'docs-governance', '--ref', 'docs/root', '--root', root], root);
+
+  const doc = readText(root, 'FUNCTION_TREE.md');
+  assert.match(doc, /pnpm test/);
+  assert.match(doc, /docker compose up -d/);
+  assert.match(doc, /cargo run -- serve --port 3000/);
+  assert.match(doc, /python -m demo\.cli reconcile --dry-run/);
+  assert.doesNotMatch(doc, /\bcd demo\b/);
+  assert.doesNotMatch(doc, /\bexport API_TOKEN/);
+  assert.doesNotMatch(doc, /\bnpm install\b/);
+});
+
 test('init backs up an existing FUNCTION_TREE.md before updating it', () => {
   const root = makeRepo();
   fs.writeFileSync(path.join(root, 'FUNCTION_TREE.md'), [

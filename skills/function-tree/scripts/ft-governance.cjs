@@ -994,7 +994,77 @@ function collectCommandEntries(root) {
     if (commands.length >= 16) return commands;
   }
 
+  for (const command of collectDocCommandExamples(root)) {
+    pushCommand(command.command, 'documented command example', command.evidence);
+    if (commands.length >= 16) return commands;
+  }
+
   return commands;
+}
+
+function collectDocCommandExamples(root) {
+  const examples = [];
+  for (const relativePath of existingPaths(root, ['README.md', 'AGENTS.md', 'CLAUDE.md', 'docs/README.md', 'docs/usage.md', 'docs/USAGE.md'])) {
+    const text = readFile(path.join(root, relativePath));
+    let inFence = false;
+    let fenceIsShell = false;
+    let lineNumber = 0;
+    for (const rawLine of text.split(/\r?\n/)) {
+      lineNumber += 1;
+      const fenceMatch = rawLine.match(/^\s*```\s*([A-Za-z0-9_-]*)/);
+      if (fenceMatch) {
+        inFence = !inFence;
+        fenceIsShell = inFence && (!fenceMatch[1] || /^(bash|sh|shell|zsh|console|terminal)$/i.test(fenceMatch[1]));
+        continue;
+      }
+      if (inFence && fenceIsShell) {
+        const command = normalizeDocCommand(rawLine);
+        if (command) examples.push({ command, evidence: `${relativePath}:${lineNumber}` });
+      }
+    }
+
+    for (const match of text.matchAll(/`([^`\n]+)`/g)) {
+      const command = normalizeDocCommand(match[1]);
+      if (command) examples.push({ command, evidence: relativePath });
+    }
+  }
+  return uniqueCommandExamples(examples, 24);
+}
+
+function normalizeDocCommand(value) {
+  let command = String(value || '').trim();
+  command = command.replace(/^\$\s*/, '').replace(/^>\s*/, '').trim();
+  command = command.replace(/\s+#.*$/, '').trim();
+  command = command.replace(/\s+\\$/, '').trim();
+  if (!command || !looksLikeRunnableProjectCommand(command) || isSetupOnlyCommand(command)) return '';
+  return command.slice(0, 120);
+}
+
+function looksLikeRunnableProjectCommand(command) {
+  return /^(?:npm|pnpm|yarn|bun|node|npx|cargo|python|python3|uv|poetry|go|docker|docker compose|make|just|task|pytest|ruff|mypy|tox)\b/.test(command);
+}
+
+function isSetupOnlyCommand(command) {
+  return /^(?:cd|export|source|alias|echo|cat|cp|mv|rm|mkdir|touch)\b/.test(command) ||
+    /^(?:npm|pnpm|yarn|bun)\s+(?:install|add|remove|update)\b/.test(command) ||
+    /^pip(?:3)?\s+install\b/.test(command) ||
+    /^python(?:3)?\s+-m\s+pip\s+install\b/.test(command) ||
+    /^poetry\s+install\b/.test(command) ||
+    /^cargo\s+install\b/.test(command) ||
+    /^go\s+(?:get|install)\b/.test(command) ||
+    /^docker\s+(?:pull|build)\b/.test(command);
+}
+
+function uniqueCommandExamples(examples, limit) {
+  const seen = new Set();
+  const unique = [];
+  for (const example of examples) {
+    if (seen.has(example.command)) continue;
+    seen.add(example.command);
+    unique.push(example);
+    if (unique.length >= limit) break;
+  }
+  return unique;
 }
 
 function collectMakeTargets(root) {
