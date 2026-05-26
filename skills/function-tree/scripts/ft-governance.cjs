@@ -760,7 +760,7 @@ function collectProjectInfo(root) {
   const apiEntries = collectApiEntries(root, sourceRoots);
   const featureCandidates = uniqueCandidates([
     ...collectFeatureCandidates(root),
-    ...collectEntrypointFeatureCandidates(uiEntries, apiEntries),
+    ...collectEntrypointFeatureCandidates(uiEntries, apiEntries, commandEntries),
   ], 16);
 
   return {
@@ -826,31 +826,49 @@ function collectFeatureCandidates(root) {
   ], 16);
 }
 
-function collectEntrypointFeatureCandidates(uiEntries, apiEntries) {
-  const candidates = [];
+function collectEntrypointFeatureCandidates(uiEntries, apiEntries, commandEntries) {
+  const groups = new Map();
+
+  function ensureGroup(key, name) {
+    if (!key || !isUsefulCandidateName(name)) return null;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        name,
+        evidence: [],
+      });
+    }
+    return groups.get(key);
+  }
+
+  function addEvidence(group, evidence) {
+    if (!group || group.evidence.includes(evidence)) return;
+    group.evidence.push(evidence);
+  }
+
   for (const entry of uiEntries) {
     const name = humanizeRouteFeatureName(entry.route);
-    if (!isUsefulCandidateName(name)) continue;
-    candidates.push({
-      name,
-      type: 'entrypoint feature',
-      status: '待核验',
-      evidence: `UI route \`${entry.route}\` (${entry.evidence})`,
-      boundary: 'Entrypoint-derived capability; verify product intent, owner, and completeness before marking implemented.',
-    });
+    const group = ensureGroup(featureKey(name), name);
+    addEvidence(group, `UI route \`${entry.route}\` (${entry.evidence})`);
   }
   for (const entry of apiEntries) {
-    const name = `${humanizeRouteFeatureName(entry.path)} API`;
-    if (!isUsefulCandidateName(name)) continue;
-    candidates.push({
-      name,
-      type: 'entrypoint feature',
-      status: '待核验',
-      evidence: `API route \`${entry.method} ${entry.path}\` (${entry.evidence})`,
-      boundary: 'Entrypoint-derived service capability; verify external contract and owner before marking implemented.',
-    });
+    const baseName = humanizeRouteFeatureName(entry.path);
+    const baseKey = featureKey(baseName);
+    const group = groups.get(baseKey) || ensureGroup(featureKey(`${baseName} API`), `${baseName} API`);
+    addEvidence(group, `API route \`${entry.method} ${entry.path}\` (${entry.evidence})`);
   }
-  return uniqueCandidates(candidates, 16);
+  for (const command of commandEntries) {
+    const key = matchingFeatureKeyForCommand(command, groups.keys());
+    if (!key) continue;
+    addEvidence(groups.get(key), `Command \`${command.command}\` (${command.evidence})`);
+  }
+
+  return uniqueCandidates(Array.from(groups.values()).map((group) => ({
+    name: group.name,
+    type: 'entrypoint feature',
+    status: '待核验',
+    evidence: group.evidence.join('; '),
+    boundary: 'Entrypoint-derived capability; verify product intent, owner, contracts, and completeness before marking implemented.',
+  })), 16);
 }
 
 function collectPlannedFeatureCandidates(root, sourceRoots) {
@@ -951,6 +969,21 @@ function cleanRouteSegment(segment) {
 
 function titleCase(value) {
   return String(value || '').replace(/\b[A-Za-z0-9]/g, (char) => char.toUpperCase());
+}
+
+function featureKey(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/api$/i, '')
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, '');
+}
+
+function matchingFeatureKeyForCommand(command, featureKeys) {
+  const haystack = featureKey(`${command.command} ${command.purpose || ''}`);
+  for (const key of featureKeys) {
+    if (key.length >= 4 && haystack.includes(key)) return key;
+  }
+  return '';
 }
 
 function uniqueCandidates(candidates, limit) {

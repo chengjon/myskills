@@ -424,6 +424,38 @@ test('init derives feature candidates from discovered entrypoints', () => {
   assert.doesNotMatch(doc, /Add README\/API\/product feature bullets/);
 });
 
+test('init merges related UI API and command entrypoints into one feature candidate', () => {
+  const root = makeRepo();
+  fs.writeFileSync(path.join(root, 'package.json'), `${JSON.stringify({
+    scripts: {
+      'sync-orders': 'node scripts/sync-orders.js',
+      dev: 'vite',
+    },
+  }, null, 2)}\n`);
+  fs.writeFileSync(path.join(root, 'openapi.yaml'), [
+    'openapi: 3.0.0',
+    'paths:',
+    '  /v1/orders:',
+    '    post:',
+    '      summary: Create order',
+    '',
+  ].join('\n'));
+  fs.mkdirSync(path.join(root, 'app', 'orders'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, 'app', 'orders', 'page.tsx'),
+    'export default function Orders() { return null; }\n',
+  );
+
+  run(['init', 'merged-entrypoints', '--ref', 'feature/orders', '--root', root], root);
+
+  const doc = readText(root, 'FUNCTION_TREE.md');
+  assert.match(doc, /\| Orders \| entrypoint feature \| 待核验 \| UI route `\/orders`/);
+  assert.match(doc, /\| Orders \| entrypoint feature \| 待核验 \|.*API route `POST \/v1\/orders`/);
+  assert.match(doc, /\| Orders \| entrypoint feature \| 待核验 \|.*Command `npm run sync-orders`/);
+  assert.doesNotMatch(doc, /\| Orders API \| entrypoint feature \|/);
+  assert.doesNotMatch(doc, /\| Dev \| entrypoint feature \|/);
+});
+
 test('init backs up an existing FUNCTION_TREE.md before updating it', () => {
   const root = makeRepo();
   fs.writeFileSync(path.join(root, 'FUNCTION_TREE.md'), [
