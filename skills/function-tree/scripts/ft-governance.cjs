@@ -736,36 +736,45 @@ function collectProjectInfo(root) {
     'tests',
     'test',
   ]);
+  const manifests = existingPaths(root, [
+    'package.json',
+    'pyproject.toml',
+    'Cargo.toml',
+    'go.mod',
+    'pom.xml',
+    'build.gradle',
+    'requirements.txt',
+    'deno.json',
+    'composer.json',
+    'Gemfile',
+  ]);
+  const docs = existingPaths(root, [
+    'README.md',
+    'AGENTS.md',
+    'CLAUDE.md',
+    'CONTRIBUTING.md',
+    'docs',
+  ]);
+  const commandEntries = collectCommandEntries(root);
+  const uiEntries = collectUiEntries(root, sourceRoots);
+  const apiEntries = collectApiEntries(root, sourceRoots);
+  const featureCandidates = uniqueCandidates([
+    ...collectFeatureCandidates(root),
+    ...collectEntrypointFeatureCandidates(uiEntries, apiEntries),
+  ], 16);
 
   return {
     name: detectProjectName(root),
     head: gitHead(root),
-    manifests: existingPaths(root, [
-      'package.json',
-      'pyproject.toml',
-      'Cargo.toml',
-      'go.mod',
-      'pom.xml',
-      'build.gradle',
-      'requirements.txt',
-      'deno.json',
-      'composer.json',
-      'Gemfile',
-    ]),
-    docs: existingPaths(root, [
-      'README.md',
-      'AGENTS.md',
-      'CLAUDE.md',
-      'CONTRIBUTING.md',
-      'docs',
-    ]),
+    manifests,
+    docs,
     sourceRoots,
-    featureCandidates: collectFeatureCandidates(root),
+    featureCandidates,
     plannedCandidates: collectPlannedFeatureCandidates(root, sourceRoots),
     sourceModules: collectSourceModules(root, sourceRoots),
-    commandEntries: collectCommandEntries(root),
-    uiEntries: collectUiEntries(root, sourceRoots),
-    apiEntries: collectApiEntries(root, sourceRoots),
+    commandEntries,
+    uiEntries,
+    apiEntries,
   };
 }
 
@@ -815,6 +824,33 @@ function collectFeatureCandidates(root) {
   return uniqueCandidates([
     ...collectMarkdownCandidates(root, ['README.md', 'FEATURES.md', 'docs/README.md', 'docs/features.md', 'docs/FEATURES.md'], 'existing'),
   ], 16);
+}
+
+function collectEntrypointFeatureCandidates(uiEntries, apiEntries) {
+  const candidates = [];
+  for (const entry of uiEntries) {
+    const name = humanizeRouteFeatureName(entry.route);
+    if (!isUsefulCandidateName(name)) continue;
+    candidates.push({
+      name,
+      type: 'entrypoint feature',
+      status: '待核验',
+      evidence: `UI route \`${entry.route}\` (${entry.evidence})`,
+      boundary: 'Entrypoint-derived capability; verify product intent, owner, and completeness before marking implemented.',
+    });
+  }
+  for (const entry of apiEntries) {
+    const name = `${humanizeRouteFeatureName(entry.path)} API`;
+    if (!isUsefulCandidateName(name)) continue;
+    candidates.push({
+      name,
+      type: 'entrypoint feature',
+      status: '待核验',
+      evidence: `API route \`${entry.method} ${entry.path}\` (${entry.evidence})`,
+      boundary: 'Entrypoint-derived service capability; verify external contract and owner before marking implemented.',
+    });
+  }
+  return uniqueCandidates(candidates, 16);
 }
 
 function collectPlannedFeatureCandidates(root, sourceRoots) {
@@ -876,6 +912,45 @@ function isUsefulCandidateName(value) {
   if (/^https?:\/\//i.test(value)) return false;
   if (/^(todo|tbd|n\/a|none)$/i.test(value)) return false;
   return true;
+}
+
+function humanizeRouteFeatureName(routePath) {
+  const parts = String(routePath || '')
+    .split(/[?#]/)[0]
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .filter((segment) => !/^v\d+$/i.test(segment))
+    .filter((segment) => !isDynamicRouteSegment(segment))
+    .map(cleanRouteSegment)
+    .filter(Boolean);
+  if (!parts.length) return 'Home';
+  return titleCase(parts.join(' '));
+}
+
+function isDynamicRouteSegment(segment) {
+  return /^\[.+\]$/.test(segment)
+    || /^:.+/.test(segment)
+    || /^\{.+\}$/.test(segment)
+    || /^\(.+\)$/.test(segment);
+}
+
+function cleanRouteSegment(segment) {
+  let value = String(segment || '').replace(/^\[+|\]+$/g, '');
+  try {
+    value = decodeURIComponent(value);
+  } catch (_) {
+    // Keep the raw segment if it is not URI-encoded text.
+  }
+  return value
+    .replace(/[-_]+/g, ' ')
+    .replace(/[^A-Za-z0-9\u4e00-\u9fff ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function titleCase(value) {
+  return String(value || '').replace(/\b[A-Za-z0-9]/g, (char) => char.toUpperCase());
 }
 
 function uniqueCandidates(candidates, limit) {

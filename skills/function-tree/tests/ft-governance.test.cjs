@@ -391,6 +391,39 @@ test('init discovers navigation and menu links as UI entries', () => {
   assert.doesNotMatch(doc, /\/api\/users/);
 });
 
+test('init derives feature candidates from discovered entrypoints', () => {
+  const root = makeRepo();
+  fs.writeFileSync(path.join(root, 'openapi.yaml'), [
+    'openapi: 3.0.0',
+    'paths:',
+    '  /v1/orders:',
+    '    get:',
+    '      summary: List orders',
+    '',
+  ].join('\n'));
+  fs.mkdirSync(path.join(root, 'app', 'dashboard'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, 'app', 'dashboard', 'page.tsx'),
+    'export default function Dashboard() { return null; }\n',
+  );
+  fs.writeFileSync(path.join(root, 'src', 'navigation.ts'), [
+    'export const nav = [',
+    "  { title: 'Portfolio', href: '/portfolio' },",
+    '];',
+    '',
+  ].join('\n'));
+
+  run(['init', 'entrypoint-features', '--ref', 'feature/root', '--root', root], root);
+
+  const doc = readText(root, 'FUNCTION_TREE.md');
+  assert.match(doc, /\| Dashboard \| entrypoint feature \| 待核验 \| UI route `\/dashboard`/);
+  assert.match(doc, /\| Portfolio \| entrypoint feature \| 待核验 \| UI route `\/portfolio`/);
+  assert.match(doc, /\| Orders API \| entrypoint feature \| 待核验 \| API route `GET \/v1\/orders`/);
+  assert.match(doc, /Auto-discovered existing feature candidates:/);
+  assert.doesNotMatch(doc, /Add README\/API\/product feature bullets/);
+});
+
 test('init backs up an existing FUNCTION_TREE.md before updating it', () => {
   const root = makeRepo();
   fs.writeFileSync(path.join(root, 'FUNCTION_TREE.md'), [
