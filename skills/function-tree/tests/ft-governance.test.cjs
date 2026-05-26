@@ -456,6 +456,36 @@ test('init merges related UI API and command entrypoints into one feature candid
   assert.doesNotMatch(doc, /\| Dev \| entrypoint feature \|/);
 });
 
+test('init renders feature overview as a nested function tree', () => {
+  const root = makeRepo();
+  fs.writeFileSync(path.join(root, 'package.json'), `${JSON.stringify({
+    scripts: {
+      'sync-orders': 'node scripts/sync-orders.js',
+    },
+  }, null, 2)}\n`);
+  fs.writeFileSync(path.join(root, 'openapi.yaml'), [
+    'openapi: 3.0.0',
+    'paths:',
+    '  /v1/orders:',
+    '    post:',
+    '      summary: Create order',
+    '',
+  ].join('\n'));
+  fs.mkdirSync(path.join(root, 'app', 'orders'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, 'app', 'orders', 'page.tsx'),
+    'export default function Orders() { return null; }\n',
+  );
+
+  run(['init', 'overview-tree', '--ref', 'feature/orders', '--root', root], root);
+
+  const doc = readText(root, 'FUNCTION_TREE.md');
+  assert.match(doc, /## 功能全景图[\s\S]*- Orders\n  - Status: 待核验\n  - Type: entrypoint feature\n  - Evidence:\n    - UI route `\/orders`/);
+  assert.match(doc, /## 功能全景图[\s\S]*    - API route `POST \/v1\/orders`/);
+  assert.match(doc, /## 功能全景图[\s\S]*    - Command `npm run sync-orders`/);
+  assert.doesNotMatch(doc, /- Orders \(UI route `\/orders`/);
+});
+
 test('init backs up an existing FUNCTION_TREE.md before updating it', () => {
   const root = makeRepo();
   fs.writeFileSync(path.join(root, 'FUNCTION_TREE.md'), [

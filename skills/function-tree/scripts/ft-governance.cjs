@@ -604,14 +604,14 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     ? info.plannedCandidates.map((feature) => `| ${escapeCell(feature.name)} | 待实现 | ${escapeCell(feature.evidence)} | Auto-discovered planned/unfinished item; verify scope and owner before implementation. |`)
     : ['| - | 待登记 | - | Add planned/unfinished features from roadmap, TODO, or product notes. |'];
   const programLines = programs.length
-    ? programs.map((program) => `  - ${program.name} (${program.ref || 'unmapped'}): ${program.description || 'governance program'}`)
-    : ['  - Add governance programs with `/ft:init` or `new-node`.'];
+    ? programs.map((program) => `- Governance: ${program.name} (${program.ref || 'unmapped'}): ${program.description || 'governance program'}`)
+    : ['- Governance: add programs with `/ft:init` or `new-node`.'];
   const featureLines = info.featureCandidates.length
-    ? info.featureCandidates.map((feature) => `  - ${feature.name} (${feature.evidence})`)
-    : ['  - Existing feature candidates: 待登记'];
+    ? info.featureCandidates.flatMap(renderFeatureOverviewLines)
+    : ['- Existing feature candidates: 待登记'];
   const plannedLines = info.plannedCandidates.length
-    ? info.plannedCandidates.map((feature) => `  - Planned/unfinished: ${feature.name} (${feature.evidence})`)
-    : ['  - Planned/unfinished: 待登记'];
+    ? info.plannedCandidates.map((feature) => `- Planned/unfinished: ${feature.name} (${feature.evidence})`)
+    : ['- Planned/unfinished: 待登记'];
   const programTable = programRows.map((row) => `| ${row.map(escapeCell).join(' | ')} |`);
 
   return [
@@ -627,12 +627,12 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     '',
     '## 功能全景图',
     '',
-    `- ${info.name}`,
+    `- Project: ${info.name}`,
     ...featureLines,
     ...plannedLines,
     ...programLines,
-    info.sourceRoots.length ? `  - Source roots: ${formatList(info.sourceRoots)}` : '  - Source roots: 待登记',
-    info.docs.length ? `  - Documentation: ${formatList(info.docs)}` : '  - Documentation: 待登记',
+    info.sourceRoots.length ? `- Source roots: ${formatList(info.sourceRoots)}` : '- Source roots: 待登记',
+    info.docs.length ? `- Documentation: ${formatList(info.docs)}` : '- Documentation: 待登记',
     '',
     '## 状态注册表',
     '',
@@ -824,6 +824,30 @@ function collectFeatureCandidates(root) {
   return uniqueCandidates([
     ...collectMarkdownCandidates(root, ['README.md', 'FEATURES.md', 'docs/README.md', 'docs/features.md', 'docs/FEATURES.md'], 'existing'),
   ], 16);
+}
+
+function renderFeatureOverviewLines(feature) {
+  const lines = [
+    `- ${feature.name}`,
+    `  - Status: ${feature.status || '待核验'}`,
+    `  - Type: ${feature.type || 'feature candidate'}`,
+  ];
+  const evidence = splitEvidenceItems(feature.evidence);
+  if (evidence.length) {
+    lines.push('  - Evidence:');
+    for (const item of evidence) lines.push(`    - ${item}`);
+  } else {
+    lines.push('  - Evidence: 待登记');
+  }
+  if (feature.boundary) lines.push(`  - Boundary: ${feature.boundary}`);
+  return lines;
+}
+
+function splitEvidenceItems(value) {
+  return String(value || '')
+    .split(/;\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function collectEntrypointFeatureCandidates(uiEntries, apiEntries, commandEntries) {
