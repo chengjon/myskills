@@ -1,6 +1,6 @@
 ---
 name: plugin-doctor
-description: Scan, health-check, and update all installed plugins, skills, GSD, and runtime across Claude Code, Codex, and OpenCode. Trigger: /plugin-doctor
+description: "Scan, health-check, and update all installed plugins, skills, GSD, and runtime across Claude Code, Codex, and OpenCode. Triggered by /plugin-doctor"
 ---
 
 # Plugin Doctor
