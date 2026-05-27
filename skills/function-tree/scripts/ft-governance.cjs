@@ -24,6 +24,53 @@ const SOURCE_EDIT_STATUSES = new Set([
   'implementation-ready',
 ]);
 
+const STEWARD_NODE_TYPES = new Set([
+  'evidence',
+  'decision',
+  'authorization',
+  'implementation',
+  'closeout',
+  'external',
+]);
+
+const STEWARD_BOUNDARIES = [
+  {
+    system: 'context-mode',
+    primary_responsibility: 'Keep command output, searches, counts, and analysis searchable without flooding context',
+    relationship: 'Feed concise analysis into steward evidence; never become durable repo truth',
+  },
+  {
+    system: 'GitNexus',
+    primary_responsibility: 'Code graph, symbol context, impact analysis, and staged change blast-radius checks',
+    relationship: 'Required before source edits; steward tree records the risk result and next gate',
+  },
+  {
+    system: 'GitHub PR / issue',
+    primary_responsibility: 'Delivery review, merge decision, issue labels, discussion, and branch state',
+    relationship: 'Steward tree records PR state and next action; it cannot merge or approve by itself',
+  },
+  {
+    system: 'Graphiti',
+    primary_responsibility: 'Cross-session memory digest of accepted decisions and milestone summaries',
+    relationship: 'Steward tree records what should be remembered; Graphiti remains digest-only',
+  },
+  {
+    system: 'OpenSpec',
+    primary_responsibility: 'Proposal, capability delta, task checklist, approval, and archive authority',
+    relationship: 'Steward tree routes architecture changes through OpenSpec and records approval state',
+  },
+  {
+    system: 'Reports',
+    primary_responsibility: 'Human-readable evidence, verification, closeout, and review notes',
+    relationship: 'Steward tree indexes reports and distinguishes accepted fact from review input',
+  },
+  {
+    system: 'Source / tests / runtime probes',
+    primary_responsibility: 'Actual implementation truth',
+    relationship: 'Steward tree must defer to current verification when report snapshots are stale',
+  },
+];
+
 function main() {
   try {
     const parsed = parseArgs(process.argv.slice(2));
@@ -70,8 +117,11 @@ function main() {
       case 'sync':
         syncActiveGates(root);
         break;
+      case 'steward-sync':
+        syncStewardProfile(root);
+        break;
       case 'validate':
-        validateGovernance(root);
+        validateGovernance(root, parsed.flags);
         break;
       case 'scope-check':
         scopeCheck(root, parsed.flags);
@@ -128,7 +178,7 @@ function usage(code) {
     'Usage:',
     '  ft-governance.cjs init <program> --ref <function-tree-node> [--description <text>] [--no-doc] [--root <repo>]',
     '  ft-governance.cjs doc [--root <repo>]',
-    '  ft-governance.cjs new-node <program> <node-id> --title <text> --ref <function-tree-node> [--root <repo>]',
+    '  ft-governance.cjs new-node <program> <node-id> --title <text> --ref <function-tree-node> [--type <kind>] [--owner-lane <lane>] [--parent <id>] [--freshness <policy>] [--root <repo>]',
     '  ft-governance.cjs observe <program> <node-id> --evidence <path-or-note> [--kind <kind>] [--note <text>] [--root <repo>]',
     '  ft-governance.cjs authorize <program> <node-id> --allowed <path> --non-goal <text> --commit-gate <text> --closeout-gate <text> [--root <repo>]',
     '  ft-governance.cjs transition <program> <node-id> --to <status> [--note <text>] [--blocker <text>] [--unblock-target-state <status>] [--root <repo>]',
@@ -138,7 +188,8 @@ function usage(code) {
     '  ft-governance.cjs status [--root <repo>]',
     '  ft-governance.cjs gate [--verbose] [--root <repo>]',
     '  ft-governance.cjs sync [--root <repo>]',
-    '  ft-governance.cjs validate [--root <repo>]',
+    '  ft-governance.cjs steward-sync [--root <repo>]',
+    '  ft-governance.cjs validate [--steward] [--root <repo>]',
     '  ft-governance.cjs scope-check [--files a,b,c] [--root <repo>]',
   ].join('\n');
   console.log(text);
@@ -226,9 +277,13 @@ function newNode(root, args, flags) {
   const node = {
     id,
     title,
+    node_type: normalizeStewardNodeType(one(flags, 'type') || 'decision'),
+    owner_lane: one(flags, 'owner-lane') || program,
+    parent: one(flags, 'parent') || '',
     status: 'planning',
     function_tree_ref: ref,
     current_head: gitHead(root),
+    freshness: one(flags, 'freshness') || 'current-head',
     source_edits_authorized: false,
     evidence: [],
     allowed_paths: [],
@@ -1754,24 +1809,230 @@ function repairActiveGates(root) {
   console.log(`rebuilt active gates: ${active.gates.length}`);
 }
 
+function syncStewardProfile(root) {
+  const index = buildStewardIndex(root);
+  const stewardDir = path.join(root, '.governance', 'steward');
+  const tracksDir = path.join(stewardDir, 'tracks');
+  ensureDir(tracksDir);
+  writeJson(path.join(stewardDir, 'steward-index.json'), index);
+  writeFile(path.join(stewardDir, 'current-next-gates.md'), renderStewardGates(index));
+  writeFile(path.join(stewardDir, 'evidence-index.md'), renderStewardEvidenceIndex(index));
+  for (const program of index.programs) {
+    const nodes = index.nodes.filter((node) => node.program === program.name);
+    writeFile(path.join(tracksDir, `${safeFileName(program.name)}.md`), renderStewardTrack(program, nodes));
+  }
+  console.log([
+    'steward profile synced',
+    `index: ${rel(root, path.join(stewardDir, 'steward-index.json'))}`,
+    `gates: ${rel(root, path.join(stewardDir, 'current-next-gates.md'))}`,
+    `evidence: ${rel(root, path.join(stewardDir, 'evidence-index.md'))}`,
+    `tracks: ${index.programs.length}`,
+  ].join('\n'));
+}
+
+function buildStewardIndex(root) {
+  const currentHead = gitHead(root);
+  const programs = collectStewardPrograms(root);
+  const nodes = programs.flatMap((program) => program.nodes.map((node) => stewardNode(program.name, node, currentHead)));
+  return {
+    schema_version: 1,
+    generated_at: new Date().toISOString(),
+    current_head: currentHead,
+    contract: {
+      role: 'relationship index between function-tree governance, external delivery systems, evidence, and implementation truth',
+      source_of_truth: 'derived from .governance/programs/*/nodes.json plus current repository HEAD',
+    },
+    boundaries: STEWARD_BOUNDARIES,
+    programs: programs.map((program) => ({
+      name: program.name,
+      node_count: program.nodes.length,
+      active_count: program.nodes.filter((node) => node && !['closed', 'archived'].includes(node.status)).length,
+      tree_path: rel(root, path.join(root, '.governance', 'programs', program.name, 'tree.md')),
+    })),
+    nodes,
+  };
+}
+
+function collectStewardPrograms(root) {
+  const programsDir = path.join(root, '.governance', 'programs');
+  if (!fs.existsSync(programsDir)) return [];
+  return fs.readdirSync(programsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => {
+      const nodesPath = path.join(programsDir, entry.name, 'nodes.json');
+      return {
+        name: entry.name,
+        nodes: fs.existsSync(nodesPath) ? loadNodes(nodesPath) : [],
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function stewardNode(program, node, currentHead) {
+  const acceptance = node.acceptance || {};
+  const stale = staleEvidenceReason(node, currentHead || '');
+  return {
+    program,
+    id: node.id || '',
+    title: node.title || node.id || '',
+    type: stewardTypeFor(node),
+    state: node.status || 'planning',
+    status: node.status || 'planning',
+    owner_lane: node.owner_lane || program,
+    parent: node.parent || '',
+    function_tree_ref: node.function_tree_ref || '',
+    evidence: stewardEvidence(node),
+    allowed_scope: {
+      paths: list(node.allowed_paths),
+      commit_gates: list(acceptance.commit_gate),
+    },
+    forbidden_scope: {
+      paths: list(node.forbidden_paths),
+      non_goals: list(node.non_goals),
+    },
+    source_edit_authority: node.source_edits_authorized === true,
+    current_head: node.current_head || '',
+    freshness: {
+      policy: node.freshness || 'current-head',
+      current_head: node.current_head || '',
+      repository_head: currentHead || '',
+      stale: Boolean(stale),
+      stale_reason: stale || '',
+    },
+    next_gate: node.next_gate || nextGateFor(node.status),
+  };
+}
+
+function stewardEvidence(node) {
+  return Array.isArray(node.evidence) ? node.evidence.map((item) => ({
+    kind: item.kind || 'evidence',
+    path: item.path || '',
+    note: item.note || '',
+    current_head: item.current_head || '',
+    recorded_at: item.recorded_at || '',
+  })) : [];
+}
+
+function renderStewardGates(index) {
+  const active = index.nodes.filter((node) => !['closed', 'archived'].includes(node.state));
+  const rows = active.map((node) => [
+    node.program,
+    node.id,
+    node.type,
+    node.state,
+    node.owner_lane,
+    node.next_gate,
+    node.source_edit_authority ? 'yes' : 'no',
+  ]);
+  return [
+    '# Current Next Gates',
+    '',
+    `Generated at: ${index.generated_at}`,
+    `Repository HEAD: ${index.current_head || '-'}`,
+    '',
+    markdownTable(['Program', 'Node', 'Type', 'State', 'Owner lane', 'Next gate', 'Source edits'], rows),
+    '',
+  ].join('\n');
+}
+
+function renderStewardEvidenceIndex(index) {
+  const rows = [];
+  for (const node of index.nodes) {
+    for (const evidence of node.evidence) {
+      rows.push([
+        node.program,
+        node.id,
+        evidence.kind,
+        evidence.path,
+        evidence.current_head,
+        evidence.note,
+      ]);
+    }
+  }
+  return [
+    '# Evidence Index',
+    '',
+    `Generated at: ${index.generated_at}`,
+    '',
+    markdownTable(['Program', 'Node', 'Kind', 'Evidence', 'HEAD', 'Note'], rows),
+    '',
+  ].join('\n');
+}
+
+function renderStewardTrack(program, nodes) {
+  const rows = nodes.map((node) => [
+    node.id,
+    node.title,
+    node.type,
+    node.state,
+    node.owner_lane,
+    node.next_gate,
+    node.freshness.stale ? 'stale' : node.freshness.policy,
+  ]);
+  return [
+    `# Steward Track: ${program.name}`,
+    '',
+    `Tree: ${program.tree_path}`,
+    `Nodes: ${program.node_count}`,
+    `Active: ${program.active_count}`,
+    '',
+    markdownTable(['Node', 'Title', 'Type', 'State', 'Owner lane', 'Next gate', 'Freshness'], rows),
+    '',
+  ].join('\n');
+}
+
+function markdownTable(headers, rows) {
+  const body = rows.length ? rows : [headers.map(() => '-')];
+  return [
+    `| ${headers.map(escapeCell).join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...body.map((row) => `| ${row.map(escapeCell).join(' | ')} |`),
+  ].join('\n');
+}
+
+function stewardTypeFor(node) {
+  if (node && node.node_type) return normalizeStewardNodeType(node.node_type);
+  if (!node) return 'decision';
+  if (node.source_edits_authorized === true || SOURCE_EDIT_STATUSES.has(node.status)) return 'implementation';
+  if (node.status === 'closeout-prepared' || node.closeout) return 'closeout';
+  if (node.status === 'authorization-prepared' || list(node.allowed_paths).length || list(node.non_goals).length) {
+    return 'authorization';
+  }
+  if (Array.isArray(node.evidence) && node.evidence.length) return 'evidence';
+  return 'decision';
+}
+
+function normalizeStewardNodeType(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!STEWARD_NODE_TYPES.has(normalized)) {
+    fail(`invalid steward node type: ${value}`, 2);
+  }
+  return normalized;
+}
+
 function activeGateFromNode(program, node) {
   return {
     program,
     id: node.id,
     title: node.title || node.id,
+    node_type: stewardTypeFor(node),
+    owner_lane: node.owner_lane || program,
+    parent: node.parent || '',
     status: node.status || 'planning',
     source_edits_authorized: node.source_edits_authorized === true,
     current_blocker: node.blocker_reason || '',
     next_allowed: node.next_gate || nextGateFor(node.status),
     function_tree_ref: node.function_tree_ref || '',
+    freshness: node.freshness || 'current-head',
     allowed_paths: list(node.allowed_paths),
     forbidden_paths: list(node.forbidden_paths),
     updated_at: node.updated_at || new Date().toISOString(),
   };
 }
 
-function validateGovernance(root) {
+function validateGovernance(root, flags = {}) {
   const errors = [];
+  const warnings = [];
   const gov = path.join(root, '.governance');
   const currentHead = gitHead(root);
   const activePath = path.join(gov, 'active-gates.json');
@@ -1791,7 +2052,10 @@ function validateGovernance(root) {
         errors.push(`${rel(root, nodesPath)} must be a JSON array`);
         continue;
       }
-      nodes.forEach((node, index) => validateNodeLike(node, `${program}.nodes[${index}]`, errors, false, currentHead));
+      nodes.forEach((node, index) => {
+        validateNodeLike(node, `${program}.nodes[${index}]`, errors, false, currentHead);
+        if (flags.steward) validateStewardNode(node, `${program}.nodes[${index}]`, warnings);
+      });
     }
   }
 
@@ -1799,6 +2063,7 @@ function validateGovernance(root) {
     console.log(errors.map((e) => `ERROR ${e}`).join('\n'));
     process.exit(1);
   }
+  if (warnings.length) console.log(warnings.map((e) => `WARN ${e}`).join('\n'));
   console.log('governance validation passed');
 }
 
@@ -1810,6 +2075,9 @@ function validateNodeLike(node, label, errors, gateMode, currentHead) {
   const status = node.status || node.gate;
   if (status && !STATUSES.has(status)) errors.push(`${label} has unknown status: ${status}`);
   if (!gateMode && !node.id) errors.push(`${label} missing id`);
+  if (!gateMode && node.node_type && !STEWARD_NODE_TYPES.has(String(node.node_type).toLowerCase())) {
+    errors.push(`${label} has unknown node_type: ${node.node_type}`);
+  }
   if (node.status === 'blocked') {
     if (!node.blocker_reason) errors.push(`${label} blocked missing blocker_reason`);
     if (!node.unblock_target_state) errors.push(`${label} blocked missing unblock_target_state`);
@@ -1824,6 +2092,15 @@ function validateNodeLike(node, label, errors, gateMode, currentHead) {
   if (!gateMode && SOURCE_EDIT_STATUSES.has(node.status)) {
     const stale = staleEvidenceReason(node, currentHead || '');
     if (stale) errors.push(`${label} ${stale}`);
+  }
+}
+
+function validateStewardNode(node, label, warnings) {
+  if (!node.next_gate) warnings.push(`${label} missing next_gate`);
+  if (!node.owner_lane) warnings.push(`${label} missing owner_lane`);
+  if (!node.freshness) warnings.push(`${label} missing freshness policy`);
+  if (stewardTypeFor(node) === 'implementation' && !list(node.allowed_paths).length) {
+    warnings.push(`${label} implementation node missing allowed_paths`);
   }
 }
 
@@ -1868,11 +2145,15 @@ function upsertActiveGate(root, program, node) {
       program,
       id: node.id,
       title: node.title || node.id,
+      node_type: stewardTypeFor(node),
+      owner_lane: node.owner_lane || program,
+      parent: node.parent || '',
       status: node.status,
       source_edits_authorized: node.source_edits_authorized === true,
       current_blocker: node.blocker_reason || '',
       next_allowed: node.next_gate || nextGateFor(node.status),
       function_tree_ref: node.function_tree_ref || '',
+      freshness: node.freshness || 'current-head',
       allowed_paths: list(node.allowed_paths),
       forbidden_paths: list(node.forbidden_paths),
       updated_at: node.updated_at || active.updated_at,

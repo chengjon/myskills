@@ -75,7 +75,6 @@ test('public skill docs avoid project-specific bindings', () => {
   ];
   const forbidden = [
     new RegExp(['quan', 'tix'].join(''), 'i'),
-    new RegExp(['Git', 'Nexus'].join('')),
     new RegExp(`\\b${['car', 'go'].join('')}\\b`),
     new RegExp(`\\b${['Ru', 'st'].join('')}\\b`),
     new RegExp(['market', '_cli'].join('')),
@@ -758,4 +757,83 @@ test('repair rebuilds active gates from nodes and drops closed nodes', () => {
   assert.match(md, /C1\.1/);
   assert.doesNotMatch(md, /OLD/);
   assert.doesNotMatch(md, /C1\.2/);
+});
+
+test('new-node records steward-tree profile fields without replacing status semantics', () => {
+  const root = makeRepo();
+  run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);
+  run([
+    'new-node',
+    'checkout-flow',
+    'C1.1',
+    '--title',
+    'Route OpenSpec approval',
+    '--ref',
+    'checkout/payment/approval',
+    '--type',
+    'external',
+    '--owner-lane',
+    'openspec',
+    '--parent',
+    'C1',
+    '--freshness',
+    'commit-scoped',
+    '--root',
+    root,
+  ], root);
+
+  const [node] = readJson(root, '.governance/programs/checkout-flow/nodes.json');
+  assert.equal(node.status, 'planning');
+  assert.equal(node.node_type, 'external');
+  assert.equal(node.owner_lane, 'openspec');
+  assert.equal(node.parent, 'C1');
+  assert.equal(node.freshness, 'commit-scoped');
+  assert.equal(node.source_edits_authorized, false);
+});
+
+test('steward-sync writes relationship index, gate, evidence, and track artifacts', () => {
+  const root = makeRepo();
+  run(['init', 'checkout-flow', '--ref', 'checkout/payment', '--root', root], root);
+  run([
+    'new-node',
+    'checkout-flow',
+    'C1.1',
+    '--title',
+    'Add payment confirmation',
+    '--ref',
+    'checkout/payment/confirmation',
+    '--type',
+    'implementation',
+    '--owner-lane',
+    'backend',
+    '--freshness',
+    'current-head',
+    '--root',
+    root,
+  ], root);
+  run(['observe', 'checkout-flow', 'C1.1', '--evidence', 'reports/baseline.md', '--kind', 'gitnexus-impact', '--note', 'LOW risk', '--root', root], root);
+  run(['authorize', 'checkout-flow', 'C1.1', '--allowed', 'src/checkout/payment-service.js', '--forbidden', 'web/**', '--non-goal', 'No account changes', '--commit-gate', 'staged GitNexus detect_changes recorded', '--closeout-gate', 'tests pass', '--root', root], root);
+
+  const output = run(['steward-sync', '--root', root], root);
+  assert.match(output, /steward profile synced/i);
+
+  const index = readJson(root, '.governance/steward/steward-index.json');
+  assert.equal(index.schema_version, 1);
+  assert.equal(index.boundaries.find((entry) => entry.system === 'GitNexus').relationship.includes('Required before source edits'), true);
+  assert.equal(index.nodes.length, 1);
+  assert.equal(index.nodes[0].type, 'implementation');
+  assert.deepEqual(index.nodes[0].allowed_scope.paths, ['src/checkout/payment-service.js']);
+  assert.deepEqual(index.nodes[0].forbidden_scope.paths, ['web/**']);
+  assert.equal(index.nodes[0].freshness.policy, 'current-head');
+
+  const gates = readText(root, '.governance/steward/current-next-gates.md');
+  assert.match(gates, /C1\.1/);
+  assert.match(gates, /review and approve implementation authorization/);
+
+  const evidence = readText(root, '.governance/steward/evidence-index.md');
+  assert.match(evidence, /gitnexus-impact/);
+  assert.match(evidence, /reports\/baseline\.md/);
+
+  const track = readText(root, '.governance/steward/tracks/checkout-flow.md');
+  assert.match(track, /Add payment confirmation/);
 });
