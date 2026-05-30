@@ -1,0 +1,153 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Tech Debt Baseline",
+  "description": "Baseline metrics snapshot for tech debt tracking. Serves as the freeze point for governance gating.",
+  "type": "object",
+  "required": ["metric_version", "generated_at"],
+  "properties": {
+    "metric_version": {
+      "type": "string",
+      "description": "Schema version for backward compatibility",
+      "pattern": "^v\\d+\\.\\d+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of baseline generation"
+    },
+    "generated_by": {
+      "type": "string",
+      "description": "Tool or agent that generated this baseline"
+    },
+    "project": {
+      "type": "string",
+      "description": "Project name"
+    },
+
+    "frontend_type_errors": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "D1.1: TypeScript compiler errors (vue-tsc --noEmit or tsc --noEmit). GATED."
+    },
+    "frontend_suppressions_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "D1.3: @ts-ignore/@ts-expect-error/@ts-nocheck count in frontend. GATED."
+    },
+    "generated_suppressions_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "D1.3: Suppressions in generated files (excluded from gate). OBSERVED."
+    },
+
+    "backend_lint_errors": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "D1.2: Critical/error-level lint issues (ruff/eslint). OBSERVED."
+    },
+    "backend_lint_warnings": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "D1.2: Warning-level lint issues. OBSERVED."
+    },
+    "backend_type_suppressions": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "D1.3: # type: ignore suppressions in backend. OBSERVED."
+    },
+
+    "skip_xfail_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "D3.1: @pytest.mark.skip + @pytest.mark.xfail count. GATED."
+    },
+    "test_placeholder_assert_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "D3.2: Placeholder 'pass' in test bodies. OBSERVED."
+    },
+    "test_coverage_percent": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "D3.3: Test coverage percentage. OBSERVED."
+    },
+
+    "backend_todo_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "D6.3: TODO/FIXME/HACK/XXX count in backend. OBSERVED."
+    },
+    "backend_placeholder_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "D1.4: Placeholder implementations (pass/TODO/notImplemented). OBSERVED."
+    },
+    "large_file_count_python": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "D1.4: Python files exceeding line limit. OBSERVED."
+    },
+    "large_file_count_frontend": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "D1.4: Vue/TS files exceeding line limit. OBSERVED."
+    },
+
+    "backend_static_code_analysis": {
+      "type": "object",
+      "description": "D1/D6: Detailed static analysis breakdown",
+      "properties": {
+        "files_analyzed": { "type": "integer" },
+        "total_issues": { "type": "integer" },
+        "critical_issues": { "type": "integer" },
+        "warning_issues": { "type": "integer" },
+        "suggestion_issues": { "type": "integer" },
+        "docstring_issues": { "type": "integer" },
+        "type_annotation_issues": { "type": "integer" },
+        "pydantic_issues": { "type": "integer" },
+        "import_issues": { "type": "integer" },
+        "security_issues": { "type": "integer" },
+        "endpoint_function_issues": { "type": "integer" }
+      }
+    },
+
+    "backend_api_documentation": {
+      "type": "object",
+      "description": "D4.1: API documentation coverage",
+      "properties": {
+        "total_endpoints": { "type": "integer" },
+        "documented_count": { "type": "integer" },
+        "documented_percentage": { "type": "number" },
+        "examples_count": { "type": "integer" },
+        "examples_percentage": { "type": "number" },
+        "error_response_percentage": { "type": "number" },
+        "total_issues": { "type": "integer" }
+      }
+    },
+
+    "dimension_ratings": {
+      "type": "object",
+      "description": "Per-dimension ratings at baseline time",
+      "properties": {
+        "D1_code_quality": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
+        "D2_architecture": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
+        "D3_testing": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
+        "D4_documentation": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
+        "D5_dependencies": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
+        "D6_process_security": { "type": "string", "enum": ["A", "B", "C", "D", "E"] }
+      }
+    },
+
+    "gated_metrics": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of metric keys that are hard-gated (must not exceed baseline)"
+    },
+    "observed_metrics": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of metric keys that are observed (regressions reported but not blocking)"
+    }
+  }
+}
