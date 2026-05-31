@@ -9,7 +9,8 @@ Personal skill collection for AI coding runtimes.
 | plugin-doctor | Scan, health-check, and update plugins/skills across Claude Code, Codex, and OpenCode | `/plugin-doctor` |
 | review2md | Evidence-driven document review with file-type and doc-type awareness | `/review2md` |
 | function-tree | FUNCTION_TREE evidence, authorization, scope, and active gate governance | `/ft:*` |
-| myweb-audit | Page-by-page frontend audit and repair orchestration for route, render, responsive, accessibility, and ArtDeco checks | `myweb-audit` |
+|| myweb-audit | Page-by-page frontend audit and repair orchestration for route, render, responsive, accessibility, and ArtDeco checks | `myweb-audit` |
+|| mystock-analysis | 股票全面分析——技术面（MA/MACD/RSI/缺口/支撑压力/3天预测）+ 基本面五步法（好公司/好未来/好价格/好买卖/风险）+ 综合评级 + 飞书输出 | `股票分析`/`个股分析`/`技术分析`/`五步法` |
 
 ## Install
 
