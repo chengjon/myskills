@@ -128,8 +128,42 @@ def fetch_moneyflow():
         except: pass
     return result
 
-def fetch_holdings_realtime(holdings_dict):
-    """获取持仓股实时行情"""
+def fetch_holdings_realtime():
+    """获取持仓股实时行情（从index.md动态读取）"""
+    vault = "/mnt/c/Users/John Cheng/Documents/Obsidian Vault"
+    index_path = f"{vault}/mystocks/index.md"
+    holdings_dict = {}
+    try:
+        with open(index_path) as f:
+            text = f.read()
+        in_table = False
+        for line in text.split("\n"):
+            if "| 代码 | 名称 |" in line and "平安普通" in line:
+                in_table = True
+                continue
+            if in_table and line.startswith("|") and not line.startswith("|--"):
+                cols = [c.strip() for c in line.split("|")[1:-1]]
+                if len(cols) >= 6:
+                    code = cols[0]
+                    name = cols[1].replace("[[","").replace("]]","")
+                    try:
+                        total_shares = int(cols[5])
+                    except:
+                        continue
+                    if total_shares > 0:
+                        holdings_dict[code] = name
+            elif in_table and not line.startswith("|"):
+                in_table = False
+    except FileNotFoundError:
+        # Fallback: hardcoded for offline
+        holdings_dict = {
+            "000537": "绿发电力", "000887": "中鼎股份", "000938": "紫光股份",
+            "001896": "豫能控股", "002077": "大港股份", "002195": "岩山科技",
+            "002196": "方正科技", "002342": "巨力索具", "002774": "快意电梯",
+            "600172": "黄河旋风", "600379": "宝光股份", "601138": "工业富联",
+            "601991": "大唐发电", "688403": "汇成股份",
+        }
+    
     codes_str = ",".join([f"{'sh' if c.startswith('6') else 'sz'}{c}" for c in holdings_dict.keys()])
     url = f"https://hq.sinajs.cn/list={codes_str}"
     req = urllib.request.Request(url, headers=headers)
