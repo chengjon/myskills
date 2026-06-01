@@ -1,156 +1,275 @@
 # Measurement Commands Reference
 
-Per-language commands for each tech debt dimension. Commands should be run in parallel when independent.
+Commands are examples for deriving metric JSON. Prefer an existing project script when available. Run commands from the repository root or use absolute paths/subshells. Do not rely on stateful `cd` chains in report appendices.
+
+## Reproducibility Requirements
+
+Every command result should record:
+
+- `command_id`
+- tool name and version
+- source roots
+- extensions
+- excludes
+- exit code
+- status: `pass`, `warn`, `fail`, `unavailable`, or `not_applicable`
+- git SHA and dirty worktree state
+- timestamp
+
+Recommended metadata commands:
+
+```bash
+git rev-parse HEAD
+git status --short
+node --version
+npm --version
+```
+
+## Root-Safe Patterns
+
+Use subshells when a package-specific working directory is required:
+
+```bash
+(cd gitnexus && npx tsc --noEmit)
+(cd gitnexus-web && npx tsc --noEmit)
+```
+
+Avoid this in reproducibility appendices because later commands inherit unexpected state:
+
+```bash
+cd gitnexus && npx tsc --noEmit
+cd gitnexus-web && npm outdated
+```
 
 ## D1: Code Quality
 
-### TypeScript / Vue
+### Type Errors
 
 ```bash
-# D1.1: Type errors
-cd web/frontend && ./node_modules/.bin/vue-tsc --noEmit 2>&1 | tail -1
-# Or for non-Vue TS:
-cd <dir> && npx tsc --noEmit 2>&1 | tail -5
+# Backend TypeScript
+(cd gitnexus && npx tsc --noEmit)
 
-# D1.2: Lint issues (with severity breakdown)
-cd web/frontend && npx eslint 'src/**/*.{ts,vue}' --format json 2>/dev/null | jq '[.[] | .messages | length] | add'
-# Or summary:
-cd web/frontend && npx eslint 'src/**/*.{ts,vue}' 2>&1 | tail -5
-
-# D1.3: Type suppressions
-grep -rn '@ts-ignore\|@ts-expect-error\|@ts-nocheck' web/frontend/src/ | wc -l
-
-# D1.4: Large files (>500 lines Vue/TS)
-find web/frontend/src -name '*.vue' -o -name '*.ts' | while read f; do
-  lines=$(wc -l < "$f")
-  if [ "$lines" -gt 500 ]; then echo "$lines $f"; fi
-done | sort -rn
+# Frontend TypeScript/Vue/React
+(cd gitnexus-web && npx tsc --noEmit)
+(cd gitnexus-web && npx vue-tsc --noEmit)
 ```
 
-### Python
+Emit separate metrics such as `backend_type_errors` and `frontend_type_errors`. Do not store backend results under frontend keys.
+
+### Lint Errors And Warnings
+
+Prefer JSON output and parse severity counts:
 
 ```bash
-# D1.1: Type errors
-mypy src/ web/backend/app/ 2>&1 | tail -5
-
-# D1.2: Lint issues (ruff)
-ruff check src/ web/backend/app/ 2>&1
-# Auto-fixable count:
-ruff check src/ web/backend/app/ --fix --dry-run 2>&1 | grep -c 'would fix'
-
-# D1.3: Type suppressions
-grep -rn '# type: ignore' src/ web/backend/app/ | wc -l
-
-# D1.4: Large files (>800 lines Python default, project configurable)
-find src/ web/backend/ -name '*.py' | while read f; do
-  lines=$(wc -l < "$f")
-  if [ "$lines" -gt 800 ]; then echo "$lines $f"; fi
-done | sort -rn
-
-# D1.5: Static analysis (bandit)
-bandit -r src/ -f json 2>/dev/null | jq '.results | length'
+(cd gitnexus && npx eslint "src/**/*.ts" --format json)
+(cd gitnexus-web && npx eslint "src/**/*.{ts,tsx,vue}" --format json)
 ```
+
+Emit separate metrics for errors and warnings, for example `backend_lint_errors`, `backend_lint_warnings`, `frontend_lint_errors`, `frontend_lint_warnings`.
+
+### Type Suppressions
+
+Scan only declared source roots and extensions:
+
+```bash
+rg -n "@ts-ignore|@ts-expect-error|@ts-nocheck" gitnexus/src -g "*.ts"
+rg -n "@ts-ignore|@ts-expect-error|@ts-nocheck" gitnexus-web/src -g "*.ts" -g "*.tsx" -g "*.vue"
+```
+
+Also scan for debt-exception metadata:
+
+```bash
+rg -n "debt-exception" .
+```
+
+### Large Files
+
+Large-file metrics must record roots, extensions, excludes, threshold, and line-count method.
+
+Example roots/extensions:
+
+```json
+{
+  "backend": {
+    "roots": ["gitnexus/src"],
+    "extensions": [".ts"],
+    "excludes": ["node_modules", "dist", "coverage"],
+    "threshold_lines": 500
+  },
+  "frontend": {
+    "roots": ["gitnexus-web/src"],
+    "extensions": [".ts", ".tsx", ".vue"],
+    "excludes": ["node_modules", "dist", "coverage"],
+    "threshold_lines": 500
+  }
+}
+```
+
+Use a small script to avoid shell precedence bugs in `find`:
+
+```bash
+node scripts/dev/collect-large-files.mjs --root gitnexus/src --ext .ts --limit 500
+node scripts/dev/collect-large-files.mjs --root gitnexus-web/src --ext .ts,.tsx,.vue --limit 500
+```
+
+If no project script exists, derive the count in a sandboxed script and print JSON only.
 
 ## D2: Architecture
 
-```bash
-# D2.1: Circular dependencies (Python)
-python -c "
-import importlib, pkgutil, sys
-# Simple import cycle detection - use pydeps for full analysis
-" 2>&1
-# Or use: pydeps src/ --max-bacon=3 --no-output --show-cycles
+### Circular Dependencies
 
-# D2.1: Circular dependencies (TypeScript)
-npx madge --circular web/frontend/src/
+```bash
+(cd gitnexus && npx madge src --extensions ts --circular --json)
+(cd gitnexus-web && npx madge src --extensions ts,tsx --circular --json)
 ```
+
+If no circular-dependency tool exists, mark the metric `unavailable` rather than inventing a value.
+
+### God File/Class Candidates
+
+Large-file output can feed god-file metrics. Use additional symbol-level tools only when available.
 
 ## D3: Testing
 
-### Python (pytest)
+### Test Totals And Failures
+
+Prefer machine-readable output:
 
 ```bash
-# D3.1: Skip/xfail count
-grep -rn '@pytest.mark.skip\|@pytest.mark.xfail' tests/ | wc -l
-
-# D3.2: Placeholder assertions (pass-only test bodies)
-grep -rn 'pass$' tests/ | grep -v '__pycache__' | grep -v 'conftest' | wc -l
-
-# D3.3: Coverage (if configured)
-pytest --co -q 2>/dev/null | tail -1  # test count
-pytest --cov=src --cov-report=term-missing 2>&1 | tail -5  # coverage
+(cd gitnexus && npx vitest run --reporter=json)
+(cd gitnexus-web && npx vitest run --reporter=json)
+pytest --json-report
 ```
 
-### TypeScript (vitest/jest)
+Emit at least:
+
+- `test_total`
+- `test_passed`
+- `test_failed`
+- `test_pending`
+- `test_duration_ms` when available
+
+`test_failed` is a hard gate with target `0`.
+
+### Skip/Xfail/Todo Counts
+
+Examples:
 
 ```bash
-# D3.1: Skip count
-grep -rn 'test.skip\|it.skip\|describe.skip\|test.todo\|it.todo' web/frontend/src/ web/frontend/tests/ | wc -l
+rg -n "test\\.skip|it\\.skip|describe\\.skip|test\\.todo|it\\.todo|skipIf\\s*\\(" gitnexus/test -g "*.ts"
+rg -n "@pytest\\.mark\\.(skip|skipif|xfail)|pytest\\.skip\\(" tests -g "*.py"
+```
 
-# D3.3: Coverage
-cd web/frontend && npx vitest run --coverage 2>&1 | tail -10
+Categorize environmental skips separately from unconditional skips when possible, but keep the total count in a metric.
+
+### Placeholder Assertions
+
+Examples:
+
+```bash
+rg -n "expect\\(true\\)\\.toBe\\(true\\)|assert True|pass\\s*$|TODO" test tests gitnexus/test gitnexus-web/src -g "*.ts" -g "*.tsx" -g "*.py"
+```
+
+### Coverage
+
+Coverage must come from coverage tooling, not test pass rate:
+
+```bash
+(cd gitnexus && npx vitest run --coverage)
+(cd gitnexus-web && npx vitest run --coverage)
+pytest --cov --cov-report=json
 ```
 
 ## D4: Documentation
 
-```bash
-# D4.1: API documentation coverage (Python/FastAPI)
-# Count endpoints with missing docstrings
-grep -rn '@router\.\|@app\.' web/backend/app/api/ | wc -l  # total endpoints
-grep -rn '"""' web/backend/app/api/ | wc -l  # documented
+Measure required documentation from project governance first. Common metrics:
 
-# D4.2: README freshness
-find . -name 'README.md' -exec stat --format='%Y %n' {} \; | sort -n
+- required docs present/missing
+- API doc coverage
+- ADR directory present
+- stale docs count
 
-# D4.3: ADR coverage
-find docs/ architecture/ -name '*.md' -path '*adr*' -o -path '*decision*' | wc -l
-```
+Record each required file set in the metric metadata.
 
 ## D5: Dependencies
 
+### Outdated Dependencies
+
 ```bash
-# D5.1: Outdated dependencies (Python)
-pip list --outdated 2>/dev/null | wc -l
-
-# D5.1: Outdated dependencies (Node)
-cd web/frontend && npm outdated 2>/dev/null | wc -l
-
-# D5.2: Vulnerable dependencies (Python)
-pip audit 2>/dev/null | grep -c 'vulnerability\|CVE' || echo "0"
-# Or: safety check 2>/dev/null
-
-# D5.2: Vulnerable dependencies (Node)
-cd web/frontend && npm audit --json 2>/dev/null | jq '.metadata.vulnerabilities.total // 0'
+(cd gitnexus && npm outdated --json)
+(cd gitnexus-web && npm outdated --json)
+cargo outdated --format json
+pip list --outdated --format=json
 ```
+
+### Vulnerabilities
+
+```bash
+(cd gitnexus && npm audit --json)
+(cd gitnexus-web && npm audit --json)
+cargo audit --json
+pip-audit --format json
+```
+
+Emit:
+
+- `critical_cve_count`
+- `high_cve_count`
+- `medium_cve_count`
+- `low_cve_count`
+
+Critical/high CVEs are hard gates by default.
 
 ## D6: Process & Security
 
-```bash
-# D6.1: SAST issues
-bandit -r src/ -f custom 2>/dev/null | grep -c 'ISSUE' || echo "0"
-# Or: ruff check src/ --select S  (security rules)
-
-# D6.2: Secrets in code
-grep -rn 'password\s*=\s*["\']' src/ web/ --include='*.py' --include='*.ts' --include='*.vue' | grep -v '.env\|config\|example\|test' | wc -l
-# Or use: gitleaks detect --no-git 2>/dev/null
-
-# D6.3: TODO/FIXME/HACK/XXX count
-grep -rn 'TODO\|FIXME\|HACK\|XXX' src/ web/backend/ | wc -l
-# Detailed breakdown:
-grep -rn 'TODO\|FIXME\|HACK\|XXX' src/ web/backend/ | sed 's/.*\(TODO\|FIXME\|HACK\|XXX\).*/\1/' | sort | uniq -c | sort -rn
-```
-
-## Aggregation Commands
+### Secrets
 
 ```bash
-# Hot files: files with most issues (combine lint + suppressions + size)
-# Example for Python:
-ruff check src/ web/backend/app/ --output-format=json 2>/dev/null | \
-  python3 -c "
-import json, sys, collections
-data = json.load(sys.stdin)
-file_counts = collections.Counter(r.get('filename','') for r in data)
-for f, c in file_counts.most_common(10):
-    print(f'{c:>4}  {f}')
-"
+gitleaks detect --source . --report-format json --report-path reports/analysis/gitleaks.json
 ```
+
+If no secrets tool is installed, mark the metric `unavailable`. Do not claim `0` secrets from an unrun scan.
+
+### SAST
+
+```bash
+semgrep --config auto --json
+bandit -r . -f json
+```
+
+### TODO/FIXME/HACK/XXX
+
+Emit separate metrics by marker and scope:
+
+```bash
+rg -n "TODO|FIXME|HACK|XXX" gitnexus/src -g "*.ts"
+rg -n "TODO|FIXME|HACK|XXX" gitnexus-web/src -g "*.ts" -g "*.tsx" -g "*.vue"
+```
+
+Recommended metric IDs:
+
+- `todo_count_backend`
+- `fixme_count_backend`
+- `hack_count_backend`
+- `xxx_count_backend`
+- `todo_count_frontend`
+- `fixme_count_frontend`
+- `hack_count_frontend`
+- `xxx_count_frontend`
+
+### Debt Exceptions
+
+```bash
+rg -n "debt-exception" . -g "*.ts" -g "*.tsx" -g "*.vue" -g "*.py" -g "*.rs" -g "*.go"
+```
+
+Emit:
+
+- `debt_exception_total`
+- `debt_exception_expired`
+- `debt_exception_expiring_soon_30d`
+- `debt_exception_missing_owner`
+- `debt_exception_missing_ttl`
+- `debt_exception_malformed`
+
+Expired or malformed exceptions are hard gate failures by default.

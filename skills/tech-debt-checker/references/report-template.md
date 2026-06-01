@@ -1,146 +1,296 @@
 # Tech Debt Report Template
 
-Report output for `tech-debt-checker` report mode. All sections are required.
-
----
+Report output for `tech-debt-checker` report mode. Render this from measurement/gate JSON. Do not manually re-interpret raw command output in Markdown.
 
 ```markdown
-# 技术债务分析报告 — {project_name}
+# Tech Debt Analysis Report - {project}
 
-> 生成日期: {YYYY-MM-DD} | 基线版本: {baseline_date or "无基线"} | 治理阶段: {Stage A/B/C or "未定义"}
+Generated: {timestamp}
+Mode: {mode}
+Baseline: {baseline_state}
+Git: {git_sha} ({branch}), dirty_worktree={dirty_worktree}
+Measurement artifact: `{measurement_json_path}`
+Gate artifact: `{gate_json_path}`
 
-## 执行摘要
+## Executive Summary
 
-| 指标 | 状态 |
-|------|------|
-| 总体门禁 | ✅ PASS / ⚠️ WARN / 🔴 FAIL |
-| D1 代码质量 | A/B/C/D/E |
-| D3 测试质量 | A/B/C/D/E |
-| D4 文档覆盖 | A/B/C/D/E |
-| D5 依赖健康 | A/B/C/D/E |
-| D6 过程/安全 | A/B/C/D/E |
+| Metric | Status |
+|--------|--------|
+| Overall Gate | **{PASS/WARN/FAIL}** |
+| Hard Gates | {hard_passed}/{hard_total} passed |
+| Soft Gates | {soft_regressed} regressed |
+| Baseline State | {missing / candidate / compared / schema-mismatch} |
+| D1 Code Quality | {A-E} |
+| D2 Architecture | {A-E} |
+| D3 Testing | {A-E} |
+| D4 Documentation | {A-E} |
+| D5 Dependencies | {A-E} |
+| D6 Process/Security | {A-E} |
 
-**关键发现** (1-3 sentences summarizing the most important findings)
+Key findings:
 
-## D1: 代码质量
-
-### 类型检查
-
-| 指标 | 当前值 | 基线值 | 变化 | 状态 |
-|------|--------|--------|------|------|
-| 前端类型错误 | {n} | {n} | {Δ} | ✅/🔴 |
-| 前端抑制标记 | {n} | {n} | {Δ} | ✅/🔴 |
-
-### 静态分析 (Lint)
-
-| 指标 | 当前值 | 基线值 | 变化 | 状态 |
-|------|--------|--------|------|------|
-| 后端 lint 错误 | {n} | {n} | {Δ} | ✅/⚠️/🔴 |
-| 后端 lint 警告 | {n} | {n} | {Δ} | ⚠️ |
-| 后端类型抑制 | {n} | {n} | {Δ} | ⚠️ |
-| 可自动修复 | {n} | — | — | — |
-
-### 大文件 (超出行数限制)
-
-| 文件 | 行数 | 限制 | 超出 |
-|------|------|------|------|
-| {path} | {n} | {limit} | {Δ} |
-
-{列出所有超出限制的文件，按超出量降序}
-
-## D3: 测试质量
-
-| 指标 | 当前值 | 基线值 | 变化 | 状态 |
-|------|--------|--------|------|------|
-| skip/xfail 数量 | {n} | {n} | {Δ} | ✅/🔴 |
-| 占位断言 | {n} | {n} | {Δ} | ⚠️ |
-| 测试覆盖率 | {%} | {%} | {Δ} | ⚠️ |
-
-## D4: 文档覆盖
-
-| 指标 | 当前值 | 基线值 | 变化 | 状态 |
-|------|--------|--------|------|------|
-| API 端点总数 | {n} | {n} | {Δ} | — |
-| 已文档化 | {%} | {%} | {Δ} | ✅/⚠️ |
-| 含示例 | {%} | {%} | {Δ} | ✅/⚠️ |
-| 含错误响应 | {%} | {%} | {Δ} | ✅/⚠️ |
-
-## D5: 依赖健康
-
-| 指标 | 当前值 | 状态 |
-|------|--------|------|
-| 过期依赖 (critical) | {n} | ✅/🔴 |
-| 过期依赖 (non-critical) | {n} | ⚠️ |
-| CVE 漏洞 | {n} | ✅/🔴 |
-
-## D6: 过程与安全
-
-| 指标 | 当前值 | 基线值 | 变化 | 状态 |
-|------|--------|--------|------|------|
-| TODO/FIXME/HACK/XXX | {n} | {n} | {Δ} | ⚠️ |
-| SAST 高危问题 | {n} | {n} | {Δ} | ✅/🔴 |
-| 代码中的密钥 | {n} | — | — | ✅/🔴 |
-
-## 热点文件 (Top 10)
-
-按问题密度排序 (问题数 × 严重性权重 / 文件行数):
-
-| 排名 | 文件 | 问题数 | 行数 | 密度 |
-|------|------|--------|------|------|
-| 1 | {path} | {n} | {n} | {n} |
-
-## 治理优先级
-
-### P0 — 必须立即处理
-
-{门禁失败的指标，必须修复后才能继续}
-
-### P1 — 当前迭代修复
-
-{高风险回归或新增关键问题}
-
-### P2 — 下一迭代规划
-
-{中等问题：大文件拆分、type:ignore 清理}
-
-### P3 — 待办事项
-
-{低优先级：小问题、接近阈值的指标}
-
-## 债务例外清单
-
-{如有 debt-exception 注解，列出其状态}
-
-| 文件 | 行 | 拥有者 | TTL | 状态 |
-|------|-----|--------|-----|------|
-| {path} | {n} | {owner} | {date} | 有效/已过期 |
-
-## 测量命令 (可复现)
-
-```bash
-# D1.1: 类型检查
-{actual command used}
-
-# D1.2: Lint
-{actual command used}
-
-# D1.3: 抑制标记
-{actual command used}
-
-# D1.4: 大文件
-{actual command used}
-
-# D3.1: skip/xfail
-{actual command used}
-
-# D3.2: 占位断言
-{actual command used}
-
-# D6.3: TODO/FIXME
-{actual command used}
+- {finding with metric ID, kind, scope, and value}
+- {finding with metric ID, kind, scope, and value}
+- {finding with metric ID, kind, scope, and value}
 ```
 
----
+Rules:
 
-**报告生成**: tech-debt-checker skill v1.0 | 测量工具版本: {tool versions}
+- If a baseline exists, this section must mention drift/comparison and must not say "no baseline" or "create baseline".
+- If no baseline exists, call the output a baseline candidate and do not claim drift.
+- Do not call test pass rate "coverage"; coverage requires a coverage metric.
+
+## Metric Source Labels
+
+Every non-trivial metric claim must include a source label:
+
+| Label | Meaning |
+|-------|---------|
+| `Measured` | Current measurement from a command/tool |
+| `Inferred` | Derived from partial evidence or a calculated estimate |
+| `Historical Baseline` | Approved prior baseline value used for comparison |
+
+Example:
+
+```markdown
+- Measured: `backend_type_errors` = 0, scope: `gitnexus`, time: 2026-06-01T19:00:00Z.
+- Historical Baseline: `backend_type_errors` = 0, baseline: `reports/analysis/tech-debt-baseline.json`.
+```
+
+## D1: Code Quality
+
+```markdown
+## D1: Code Quality
+
+| Metric ID | Scope | Current | Baseline | Drift | Gate | Status |
+|-----------|-------|---------|----------|-------|------|--------|
+| `backend_type_errors` | backend | {value} | {baseline} | {drift} | hard | {status} |
+| `frontend_type_errors` | frontend | {value} | {baseline} | {drift} | hard | {status} |
+| `backend_lint_errors` | backend | {value} | {baseline} | {drift} | hard | {status} |
+| `backend_lint_warnings` | backend | {value} | {baseline} | {drift} | soft | {status} |
+| `large_file_count_backend` | backend | {value} | {baseline} | {drift} | soft | {status} |
+| `large_file_count_frontend` | frontend | {value} | {baseline} | {drift} | soft | {status} |
+
+Measurement scope:
+
+- Backend roots: {roots}; extensions: {extensions}; excludes: {excludes}; line-count method: {method}
+- Frontend roots: {roots}; extensions: {extensions}; excludes: {excludes}; line-count method: {method}
+
+Hot files:
+
+| Rank | File | Lines | Lint Warnings | Primary Concern |
+|------|------|-------|---------------|-----------------|
+| 1 | `{file}` | {lines} | {warnings} | {concern} |
+
+### D1 Rating: {A-E}
+
+Rationale: {deterministic rule and metric IDs}
+```
+
+## D2: Architecture
+
+```markdown
+## D2: Architecture
+
+| Metric ID | Scope | Current | Baseline | Drift | Gate | Status |
+|-----------|-------|---------|----------|-------|------|--------|
+| `circular_dependency_count` | repo | {value} | {baseline} | {drift} | {gate} | {status} |
+| `god_file_count_backend` | backend | {value} | {baseline} | {drift} | {gate} | {status} |
+
+God file/class candidates:
+
+| File/Symbol | Lines/Size | Scope | Evidence |
+|-------------|------------|-------|----------|
+| `{path}` | {lines} | {scope} | {metric_id} |
+
+### D2 Rating: {A-E}
+
+Rationale: {deterministic rule and metric IDs}
+```
+
+## D3: Testing
+
+```markdown
+## D3: Testing
+
+| Metric ID | Scope | Current | Baseline | Drift | Gate | Status |
+|-----------|-------|---------|----------|-------|------|--------|
+| `test_total` | repo | {value} | {baseline} | {drift} | none | {status} |
+| `test_passed` | repo | {value} | {baseline} | {drift} | none | {status} |
+| `test_failed` | repo | {value} | {baseline} | {drift} | hard | {status} |
+| `test_pending` | repo | {value} | {baseline} | {drift} | none | {status} |
+| `skip_xfail_count` | repo | {value} | {baseline} | {drift} | {gate} | {status} |
+| `test_placeholder_assert_count` | repo | {value} | {baseline} | {drift} | soft | {status} |
+| `test_coverage_percent` | repo | {value}% | {baseline}% | {drift} | soft | {status} |
+
+Failing tests:
+
+| Suite/File | Count | Primary Failure |
+|------------|-------|-----------------|
+| `{file}` | {count} | {summary} |
+
+Skip/xfail inventory:
+
+| Category | Count | Notes |
+|----------|-------|-------|
+| {category} | {count} | {notes} |
+
+### D3 Rating: {A-E}
+
+Rationale: {deterministic rule and metric IDs}. If `test_failed > 0`, D3 must be E unless this is explicitly a failing baseline candidate.
+```
+
+## D4: Documentation
+
+```markdown
+## D4: Documentation
+
+| Metric ID | Scope | Current | Baseline | Drift | Gate | Status |
+|-----------|-------|---------|----------|-------|------|--------|
+| `docs_required_present` | repo | {value} | {baseline} | {drift} | {gate} | {status} |
+| `adr_directory_present` | repo | {value} | {baseline} | {drift} | {gate} | {status} |
+| `api_doc_coverage_percent` | repo | {value}% | {baseline}% | {drift} | {gate} | {status} |
+
+### D4 Rating: {A-E}
+
+Rationale: {deterministic rule and metric IDs}
+```
+
+## D5: Dependencies
+
+```markdown
+## D5: Dependencies
+
+| Metric ID | Scope | Current | Baseline | Drift | Gate | Status |
+|-----------|-------|---------|----------|-------|------|--------|
+| `outdated_deps_backend` | backend | {value} | {baseline} | {drift} | soft | {status} |
+| `outdated_deps_frontend` | frontend | {value} | {baseline} | {drift} | soft | {status} |
+| `critical_cve_count` | repo | {value} | {baseline} | {drift} | hard | {status} |
+| `high_cve_count` | repo | {value} | {baseline} | {drift} | hard | {status} |
+
+Notable dependency risks:
+
+| Package | Scope | Current | Latest | Risk |
+|---------|-------|---------|--------|------|
+| `{package}` | {scope} | {current} | {latest} | {risk} |
+
+### D5 Rating: {A-E}
+
+Rationale: {deterministic rule and metric IDs}
+```
+
+## D6: Process & Security
+
+```markdown
+## D6: Process & Security
+
+| Metric ID | Scope | Current | Baseline | Drift | Gate | Status |
+|-----------|-------|---------|----------|-------|------|--------|
+| `secrets_in_code` | repo | {value} | {baseline} | {drift} | hard | {status} |
+| `sast_high_count` | repo | {value} | {baseline} | {drift} | hard/soft | {status} |
+| `todo_count_backend` | backend | {value} | {baseline} | {drift} | soft | {status} |
+| `fixme_count_backend` | backend | {value} | {baseline} | {drift} | soft | {status} |
+| `debt_exception_total` | repo | {value} | {baseline} | {drift} | none | {status} |
+| `debt_exception_expired` | repo | {value} | {baseline} | {drift} | hard | {status} |
+| `debt_exception_missing_owner` | repo | {value} | {baseline} | {drift} | hard | {status} |
+| `debt_exception_missing_ttl` | repo | {value} | {baseline} | {drift} | hard | {status} |
+
+### D6 Rating: {A-E}
+
+Rationale: {deterministic rule and metric IDs}
+```
+
+## Exception Inventory
+
+```markdown
+## Debt Exception Inventory
+
+| Metric ID | Value | Status |
+|-----------|-------|--------|
+| `debt_exception_total` | {value} | {status} |
+| `debt_exception_expired` | {value} | {status} |
+| `debt_exception_expiring_soon_30d` | {value} | {status} |
+| `debt_exception_missing_owner` | {value} | {status} |
+| `debt_exception_missing_ttl` | {value} | {status} |
+
+Details:
+
+| File | Line | Owner | TTL | Status | Reason |
+|------|------|-------|-----|--------|--------|
+| `{file}` | {line} | {owner} | {ttl} | {status} | {reason} |
+```
+
+## Remediation Plan
+
+```markdown
+## Governance Priorities
+
+### P0 - Fix Immediately
+
+| Issue | Metric ID | Scope | Action |
+|-------|-----------|-------|--------|
+| {issue} | `{metric_id}` | {scope} | {action} |
+
+### P1 - Current Sprint
+
+| Issue | Metric ID | Scope | Action |
+|-------|-----------|-------|--------|
+| {issue} | `{metric_id}` | {scope} | {action} |
+
+### P2 - Next Sprint
+
+| Issue | Metric ID | Scope | Action |
+|-------|-----------|-------|--------|
+| {issue} | `{metric_id}` | {scope} | {action} |
+
+### P3 - Backlog
+
+| Issue | Metric ID | Scope | Action |
+|-------|-----------|-------|--------|
+| {issue} | `{metric_id}` | {scope} | {action} |
+```
+
+## Reproducibility Appendix
+
+```markdown
+## Reproducibility
+
+| Command ID | Tool | Scope | Exit | Status |
+|------------|------|-------|------|--------|
+| `{command_id}` | `{tool}` | `{scope}` | `{exit_code}` | `{status}` |
+
+Tool versions:
+
+| Tool | Version |
+|------|---------|
+| node | {version} |
+| npm | {version} |
+| tsc | {version} |
+| eslint | {version} |
+
+Measurement roots/excludes:
+
+| Metric ID | Roots | Extensions | Excludes |
+|-----------|-------|------------|----------|
+| `{metric_id}` | `{roots}` | `{extensions}` | `{excludes}` |
+```
+
+## Artifact Self-Check
+
+Include the self-check result in the report or adjacent gate JSON:
+
+```markdown
+## Artifact Self-Check
+
+| Check | Status |
+|-------|--------|
+| Markdown metric claims map to JSON metric IDs | {pass/fail} |
+| Gated metrics exist in measurement JSON | {pass/fail} |
+| Baseline language matches baseline state | {pass/fail} |
+| Failing tests force FAIL or failing-baseline-candidate language | {pass/fail} |
+| Coverage is not confused with pass rate | {pass/fail} |
+| Large-file scope declares roots/extensions/excludes/method | {pass/fail} |
+| Backend/frontend metric scopes are not crossed | {pass/fail} |
+| Debt exception metrics are present | {pass/fail} |
+| Commands include git SHA, dirty status, tool versions, and exits | {pass/fail} |
 ```

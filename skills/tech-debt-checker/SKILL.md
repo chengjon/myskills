@@ -13,11 +13,13 @@ description: >
 
 # Tech Debt Checker
 
-> **补充规范说明**: 本文件是技能执行提示。涉及项目治理、审批门禁时，优先遵循项目 `architecture/STANDARDS.md`。
+> **补充规范说明**: 本文件是技能执行提示。涉及项目治理、审批门禁时，优先遵循项目 `architecture/STANDARDS.md`、`DEVELOPMENT_RULES.md`、`AGENTS.md` 或同等本地治理文件。
 
 ## Overview
 
-Systematic tech debt measurement, tracking, and gating skill based on SQALE/SonarQube methodology. Measures debt across 6 dimensions, compares against baseline, runs governance gates, and generates actionable reports with prioritized remediation plans.
+Use this skill as a reproducible measurement protocol, not just a report-writing checklist. Measure current state into machine-readable JSON first, compare that JSON to any approved baseline, compute gate/rating results from deterministic rules, then render Markdown from those artifacts.
+
+Markdown is a presentation layer. The JSON measurement artifact and approved baseline are the sources of truth.
 
 ## 6-Dimension Taxonomy
 
@@ -25,194 +27,248 @@ Systematic tech debt measurement, tracking, and gating skill based on SQALE/Sona
 |-----|------|-------|---------|
 | D1 | Code Quality | Type errors, lint, suppressions, complexity, large files | per-diff |
 | D2 | Architecture | Coupling, circular deps, god classes, abstraction gaps | per-release |
-| D3 | Testing | Coverage, skip/xfail, placeholder asserts, test smells | per-diff |
+| D3 | Testing | Failing tests, coverage, skip/xfail, placeholder asserts, test smells | per-diff |
 | D4 | Documentation | API docs, README freshness, ADR coverage | per-release |
 | D5 | Dependencies | Outdated/vulnerable deps, build time, config drift | per-release |
-| D6 | Process/Security | SAST issues, secrets, governance gate pass rate | per-diff |
+| D6 | Process/Security | SAST issues, secrets, governance gate pass rate, debt exceptions | per-diff |
 
 ## When to Use
 
-- User asks to check/measure/analyze tech debt or code quality
-- User mentions baseline, drift, quality gate, debt report
-- Before releases or major PRs for debt assessment
-- Weekly/monthly debt review cycles
-- After significant refactoring to verify improvement
+- User asks to check, measure, analyze, baseline, gate, or report tech debt or code quality.
+- User mentions baseline drift, quality gate, skip/xfail count, type errors, lint issues, large files, coverage, dependency risk, or release health.
+- Before releases, major PRs, weekly/monthly debt reviews, or after significant refactoring to verify improvement.
 
 ## Do Not Use
 
-- Feature development or bug fixing
-- Security penetration testing (use security-specific tools)
-- Performance profiling (use benchmark tools)
-- As a substitute for code review
+- Feature development or bug fixing.
+- Security penetration testing; use a security-specific workflow.
+- Performance profiling; use benchmark/profiler tools.
+- As a substitute for code review.
 
 ## Modes
 
-| Mode | Purpose | Mutates Code |
-|------|---------|-------------|
-| `analyze` | Measure current state, compare against baseline | No |
-| `baseline` | Create/update/freeze baseline metrics | Baseline file only |
-| `drift` | Generate drift report vs baseline | No |
-| `gate` | Run governance gate (pass/fail) | No |
-| `report` | Generate full markdown report | Report file only |
-| `fix` | Auto-fix safe lint/formatting issues | Yes (lint only) |
+| Mode | Purpose | Writes |
+|------|---------|--------|
+| `analyze` | Measure current state and, if a baseline exists, compare against it | measurement/report artifacts only |
+| `init-baseline` | Create the first approved baseline from current measurements | baseline file only after explicit approval |
+| `drift` | Compare current measurements against an existing baseline | drift/report artifacts only |
+| `gate` | Compute PASS/WARN/FAIL from current measurements and baseline/gate rules | gate artifact only |
+| `report` | Render Markdown from existing measurement/gate JSON | report file only |
+| `fix` | Auto-fix safe lint/formatting issues | code files, lint-only |
 
-Default mode: `analyze`
+Default mode: `analyze`.
 
-## Operating Rules
+State rules:
 
-1. **Detect project context first** — baseline, governance charter, existing tooling
-2. **Never modify code in analyze/drift/gate/report modes** — measurement only
-3. **Fix mode only touches lint-formatting issues** — never refactor or change logic
-4. **Baseline changes require explicit user approval** — never auto-update
-5. **Gate failures are informational** — report, don't block (unless CI)
-6. **Use existing project tooling when available** — wrap, don't reimplement
-7. **Distinguish clearly**: new regression vs pre-existing debt vs measurement artifact
-8. **Run all measurements in parallel** — independent dimensions never sequential
+- If a baseline exists, every non-`init-baseline` report MUST compare against it. Do not write "no baseline" or "create baseline" language.
+- If no baseline exists, write "baseline candidate" language and propose baseline creation. Do not invent drift.
+- Updating or replacing a baseline requires explicit user approval. Never auto-update it.
+- `report` mode must render from measurement/gate JSON; it must not manually re-interpret raw command output.
+- `fix` mode may only apply formatter/linter safe fixes. Do not refactor or change behavior.
 
-## Workflow
+## Output Contract
 
-### Step 1: Environment Detection
+Generate artifacts in this order:
 
-Detect project type, existing tooling, baseline location:
-- Baseline: `reports/analysis/tech-debt-baseline.json` (or project-configured path)
-- Governance: `docs/standards/*governance*.md` or `docs/standards/*charter*.md`
-- Gate scripts: `scripts/dev/quality_gate/` or `scripts/run_*_report.sh`
-- Language stack: Python (ruff/mypy/black), TypeScript (vue-tsc/tsc/eslint), etc.
-- Test framework: pytest, vitest, jest, etc.
-- Config: pyproject.toml, tsconfig.json, package.json
+1. Current measurements JSON: `reports/analysis/tech-debt-measurements-YYYY-MM-DD.json`
+2. Gate/drift JSON when applicable: `reports/analysis/tech-debt-gate-YYYY-MM-DD.json`
+3. Markdown report: `reports/analysis/tech-debt-report-YYYY-MM-DD.md`
+4. Baseline JSON only in `init-baseline` mode and only after approval: `reports/analysis/tech-debt-baseline.json`
 
-### Step 2: Dimension Measurement (All Parallel)
+Each metric in JSON MUST be an object with these fields:
 
-Execute all applicable dimension measurements in parallel. See [references/measurement-commands.md](references/measurement-commands.md) for per-language commands.
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `id` | yes | Stable metric key, scoped by area where needed, for example `backend_type_errors` |
+| `dimension` | yes | `D1` through `D6` |
+| `scope` | yes | Project area such as `backend`, `frontend`, `repo`, or a package name |
+| `kind` | yes | `Measured`, `Inferred`, or `Historical Baseline` |
+| `value` | yes | Numeric, boolean, string, array, or object value |
+| `unit` | yes | `count`, `percent`, `status`, `files`, etc. |
+| `tool` | yes | Tool or script that produced the value |
+| `command_id` | yes | Stable ID for the reproducibility command |
+| `source_roots` | yes | Paths included in the measurement |
+| `extensions` | when file-based | Extensions included, for example `.ts`, `.tsx`, `.vue` |
+| `excludes` | yes | Excluded paths/globs |
+| `measured_at` | yes | ISO timestamp |
+| `git_sha` | yes | Commit measured |
+| `dirty_worktree` | yes | Whether uncommitted changes affected measurement |
+| `gate` | yes | `hard`, `soft`, or `none` |
+| `target` | when gated | Desired threshold, for example `0` |
+| `baseline_value` | when baseline exists | Approved baseline value |
+| `drift` | when baseline exists | Numeric or structured delta |
+| `status` | yes | `pass`, `warn`, `fail`, `unavailable`, or `not_applicable` |
 
-**Core checks (always run)**:
-- D1.1: Static type errors (vue-tsc / mypy / tsc --noEmit)
-- D1.2: Lint issues (ruff / eslint)
-- D1.3: Type suppressions (@ts-ignore, # type: ignore)
-- D1.4: Large files (exceeding project line limits)
-- D3.1: Test skip/xfail count
-- D3.2: Placeholder assertions in tests
+Rules:
 
-**Extended checks (when tooling available)**:
-- D2.1: Circular dependency detection (madge / pydeps)
-- D4.1: API documentation coverage
-- D5.1: Outdated dependencies (npm audit / pip audit / cargo audit)
-- D5.2: Vulnerable dependencies (CVE scan)
-- D6.1: SAST scan results (bandit / semgrep)
-- D6.2: Secrets in code (gitleaks / trufflehog)
+- Split backend/frontend/repo metrics. Do not store backend measurements under frontend keys.
+- File counts MUST declare roots, extensions, excludes, and line-count method.
+- Test pass rate and code coverage are different metrics. Never describe pass rate as coverage.
+- Historical baseline values must not be described as current state.
+- Every Markdown metric claim must be traceable to a JSON metric ID.
 
-### Step 3: Baseline Comparison
+## Core Measurements
 
-If baseline exists (see [references/baseline-schema.json](references/baseline-schema.json)):
-- Compare each metric against baseline values
-- Classify: ✅ improved / ⚠️ unchanged / 🔴 regressed / 🆕 new metric
-- Calculate drift percentage for numeric metrics
-- Flag gated metric regressions as HIGH priority
+Run all independent measurements in parallel where safe. Use existing project tooling first; wrap it rather than replacing it.
 
-If no baseline:
-- Propose baseline creation with current measurements
-- Recommend which metrics to gate vs observe based on project maturity
+Required checks:
 
-### Step 4: Rating & Gate
+- D1.1: Type errors per scope (`tsc --noEmit`, `vue-tsc --noEmit`, `mypy`, etc.).
+- D1.2: Lint errors and warnings with severity breakdown.
+- D1.3: Type suppressions and debt suppressions.
+- D1.4: Large files by explicit roots/extensions/line limit.
+- D3.1: Test totals, passed, failed, pending/skipped/todo/xfail counts.
+- D3.2: Placeholder assertions or no-op tests.
+- D3.3: Coverage percentage when tooling exists.
+- D5.1: Outdated dependencies.
+- D5.2: Vulnerable dependencies.
+- D6.1: Secrets and SAST findings when tooling exists.
+- D6.2: Debt exception inventory and expiry state.
 
-Per-dimension rating (SonarQube-inspired):
-- **A** (excellent): All metrics at or above target
-- **B** (good): Minor issues, no regressions
-- **C** (acceptable): Some issues, within tolerance
-- **D** (concerning): Multiple issues or regressions
-- **E** (critical): Gated metric failures or severe regressions
+Extended checks:
 
-Gate rules: see [references/gate-rules.md](references/gate-rules.md)
-- Gated metrics: MUST NOT exceed baseline (hard gate)
-- Observed metrics: SHOULD NOT exceed baseline (soft gate, report only)
+- D2.1: Circular dependency detection.
+- D2.2: God class/file candidates.
+- D4.1: API or operator documentation coverage.
+- D4.2: ADR/governance documentation presence and freshness.
 
-### Step 5: Reporting
+See [references/measurement-commands.md](references/measurement-commands.md) for command patterns.
 
-Generate structured report using [references/report-template.md](references/report-template.md):
-- Executive summary with overall gate status (PASS / WARN / FAIL)
-- Per-dimension breakdown with specific findings
-- Hot files (worst offenders ranked)
-- Trend vs baseline (if baseline exists)
-- Prioritized remediation plan (P0–P3)
-- Measurement commands appendix (for reproducibility)
+## Baseline, Drift, And Gate
 
-### Step 6: Exception Handling
+If baseline exists:
 
-When debt exceptions exist (annotations in code):
-- Parse exception annotations: `// @ts-expect-error [debt-exception] owner=X ttl=YYYY-MM-DD reason="..."`
-- Validate TTL not expired; flag expired exceptions as violations
-- Include exception inventory in report
-- See [references/exception-template.md](references/exception-template.md) for format
+- Compare every current metric with its matching baseline metric ID.
+- Classify each metric as improved, unchanged, regressed, new, removed, unavailable, or not_applicable.
+- Missing gated current metrics are gate failures unless the report explicitly marks the metric not_applicable with evidence.
+- Produce drift percentages for numeric metrics where meaningful.
 
-## Severity Model
+If no baseline exists:
 
-| Level | Criteria | Action |
-|-------|----------|--------|
-| CRITICAL | Gated metric regression | Must fix before merge |
-| HIGH | Non-gated regression or new critical lint issues | Fix in current sprint |
-| MEDIUM | Pre-existing issues above threshold | Plan for next sprint |
-| LOW | Minor issues, near-threshold values | Backlog |
+- Generate current measurements and a baseline candidate.
+- Recommend hard/soft/observed gates.
+- Do not claim PASS/WARN/FAIL against a missing baseline unless using absolute hard targets such as secrets = 0.
+
+Default hard gates:
+
+| Metric Pattern | Target |
+|----------------|--------|
+| `*_type_errors` | `0` |
+| `*_lint_errors` | `0` unless project governance says otherwise |
+| `test_failed` | `0` |
+| `secrets_in_code` | `0` |
+| `critical_cve_count` / `high_cve_count` | `0` |
+| `debt_exception_expired` | `0` |
+| `debt_exception_missing_owner` | `0` |
+| `debt_exception_missing_ttl` | `0` |
+| gated suppressions and skip/xfail counts | must not exceed approved baseline |
+
+Default soft/observed metrics:
+
+- Lint warnings.
+- Large file counts.
+- TODO/FIXME/HACK/XXX marker counts.
+- Outdated dependencies without known CVEs.
+- Coverage percentage.
+- Documentation completeness.
+
+Gate status:
+
+- `PASS`: all hard gates pass and no critical findings exist.
+- `WARN`: hard gates pass, but soft/observed metrics regressed or ratings declined.
+- `FAIL`: any hard gate fails, required gated metric is unavailable, secrets are found, critical/high CVEs exist, expired/malformed exceptions exist, or `test_failed > 0`.
+
+## Deterministic Ratings
+
+Use these rules before applying dimension-specific nuance:
+
+- `E`: any hard gate fails in the dimension, secrets are found, critical/high CVEs exist, expired exceptions exist, or tests fail in D3.
+- `D`: no hard gate failure, but release-critical observed metrics regressed or debt is far above target.
+- `C`: debt is high but stable and documented.
+- `B`: minor observed debt, no hard gate failure, no important regression.
+- `A`: all hard gates pass, observed debt is below target, and no expired exceptions exist.
+
+Do not rate D3 as A/B when `test_failed > 0`. Do not rate D5 as A/B when critical/high CVEs exist. Do not rate D6 as A/B when secrets or expired exceptions exist.
+
+## Reporting
+
+Generate the Markdown report from [references/report-template.md](references/report-template.md). It must include:
+
+- Mode and baseline state.
+- Overall gate status with hard/soft gate counts.
+- Per-dimension ratings and the metric IDs behind them.
+- Current vs baseline drift when a baseline exists.
+- Hot files or hot packages, with measurement scope.
+- Exception inventory.
+- Reproducibility appendix listing command IDs, not ad-hoc shell fragments.
+- Prioritized remediation plan.
+
+Report language constraints:
+
+- If baseline exists, never say "no baseline" or "create baseline" unless recommending a separate replacement baseline after approval.
+- Use `Measured`, `Inferred`, and `Historical Baseline` labels for metric claims when project governance requires metric-source separation.
+- Do not call a metric "coverage" unless it is code coverage, not pass rate.
+
+## Artifact Self-Check
+
+Before finishing, run a self-check over generated artifacts. The work is incomplete if any check fails:
+
+- Every Markdown metric claim maps to a JSON metric ID.
+- Every gated metric exists in the measurement JSON and has a current value or justified `not_applicable` status.
+- If baseline exists, report contains drift status and does not contain stale "no baseline" or "create baseline" language.
+- If `test_failed > 0`, overall gate is `FAIL` or the report explicitly states it is a failing historical baseline candidate.
+- If coverage is mentioned, it comes from a coverage metric, not pass rate.
+- Large-file counts include declared roots, extensions, excludes, and line-count method.
+- Backend and frontend metrics are not stored under the wrong scope.
+- Debt exception totals and expired/malformed counts are present.
+- Measurement commands include git SHA, dirty status, tool versions, command IDs, and exit/unavailable states.
+
+## Exception Handling
+
+When debt exceptions exist:
+
+- Parse annotations such as `// @ts-expect-error [debt-exception] owner=X ttl=YYYY-MM-DD reason="..."`.
+- Validate owner, TTL, reason, issue/remediation fields when required by project policy.
+- Count total, expired, expiring soon, missing owner, missing TTL, and malformed exceptions.
+- Treat expired or malformed exceptions as hard gate failures.
+- Include exception inventory in measurement JSON and report.
+
+See [references/exception-template.md](references/exception-template.md).
 
 ## Project Configuration Discovery
 
 Auto-detect from project files:
-- **Python**: pyproject.toml (line-length, target-version), ruff.toml, mypy.ini
-- **TypeScript**: tsconfig.json (strict), .eslintrc, package.json
-- **Tests**: pytest.ini / vitest.config.ts (markers, coverage thresholds)
-- **Line limits**: Python default 800, Vue/TS default 500, override from STANDARDS.md
-- **Baseline**: configurable path, default `reports/analysis/tech-debt-baseline.json`
-- **Governance**: configurable path, default `docs/standards/*governance*.md`
 
-## Integration with Existing Tooling
-
-When project has existing debt tooling, **USE IT** — do not reimplement:
-- `scripts/run_tech_debt_weekly_report.sh` → use for weekly reports
-- `scripts/dev/quality_gate/tech_debt_governance_gate.py` → use for gate checks
-- Baseline JSON → use as authoritative source
-- Drift report script → use for drift analysis
-
-## Required Checks (Analyze Mode)
-
-All checks must complete before report generation:
-
-- [ ] D1.1: Static type errors
-- [ ] D1.2: Lint issues with severity breakdown
-- [ ] D1.3: Type suppressions count
-- [ ] D1.4: Large files exceeding line limits
-- [ ] D3.1: Test skip/xfail count
-- [ ] D3.2: Placeholder assertions in tests
-- [ ] Baseline comparison (if baseline exists)
-- [ ] Gate evaluation (if governance rules exist)
-- [ ] Exception inventory (if annotations found)
-
-## Required States
-
-| After Step | State |
-|-----------|-------|
-| Step 2 complete | All measurement results captured |
-| Step 3 complete | Drift classification done for each metric |
-| Step 4 complete | Gate status determined (PASS/WARN/FAIL) |
-| Step 5 complete | Report file written to project reports directory |
+- Governance: `AGENTS.md`, `CLAUDE.md`, `DEVELOPMENT_RULES.md`, `docs/standards/*governance*.md`, `docs/standards/*charter*.md`.
+- Python: `pyproject.toml`, `ruff.toml`, `mypy.ini`.
+- TypeScript: `tsconfig.json`, `vite.config.*`, `.eslintrc*`, `eslint.config.*`, `package.json`.
+- Tests: `pytest.ini`, `vitest.config.*`, `jest.config.*`, coverage config.
+- Baseline: configurable path, default `reports/analysis/tech-debt-baseline.json`.
+- Existing debt tooling: `scripts/run_tech_debt_weekly_report.sh`, `scripts/dev/quality_gate/`, or project-specific report scripts.
 
 ## Failure Handling
 
-- **Measurement command fails**: Skip dimension, report as "measurement unavailable", continue others
-- **Baseline file missing**: Run analyze without comparison, propose baseline creation
-- **Governance charter missing**: Use default gate rules from references/gate-rules.md
-- **No test framework detected**: Skip D3, note in report
+- Measurement command fails: mark that metric `unavailable`, capture exit status and reason, continue unrelated metrics.
+- Required hard-gate metric is unavailable: gate `FAIL` unless project policy explicitly marks it not_applicable.
+- Baseline file missing: run current measurement only and produce a baseline candidate.
+- Baseline schema mismatch: do not silently compare. Report schema mismatch and recommend migration.
+- Governance charter missing: use default gate rules from [references/gate-rules.md](references/gate-rules.md).
+- No test framework detected: mark D3 not_applicable with evidence; do not invent passing test state.
 
 ## Execution Artifacts
 
 | Artifact | Location | Purpose |
 |----------|----------|---------|
-| Tech debt report | `reports/analysis/tech-debt-report-YYYY-MM-DD.md` | Full analysis report |
-| Baseline file | `reports/analysis/tech-debt-baseline.json` | Metric freeze point |
-| Drift report | `reports/analysis/tech-debt-baseline-drift-report.json` | Baseline comparison |
+| Measurement JSON | `reports/analysis/tech-debt-measurements-YYYY-MM-DD.json` | Current measured state |
+| Gate JSON | `reports/analysis/tech-debt-gate-YYYY-MM-DD.json` | Computed gate/drift result |
+| Tech debt report | `reports/analysis/tech-debt-report-YYYY-MM-DD.md` | Human-readable report |
+| Baseline file | `reports/analysis/tech-debt-baseline.json` | Approved freeze point |
+| Baseline candidate | `reports/analysis/tech-debt-baseline-candidate-YYYY-MM-DD.json` | Proposed baseline awaiting approval |
 
 ## Reference Order
 
-1. Project governance charter (if exists)
-2. Project baseline JSON (if exists)
-3. Project STANDARDS.md (if exists)
-4. This skill's `references/` directory
-5. General best practices (SQALE/SonarQube methodology)
+1. Project governance charter or agent instructions.
+2. Project baseline JSON.
+3. Project measurement/gate scripts.
+4. This skill's `references/` directory.
+5. General SQALE/SonarQube-style best practices.

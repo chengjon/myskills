@@ -1,13 +1,23 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Tech Debt Baseline",
-  "description": "Baseline metrics snapshot for tech debt tracking. Serves as the freeze point for governance gating.",
+  "description": "Approved freeze point for tech debt measurement. New baselines use metric objects so Markdown reports, gate results, and drift comparisons share the same source of truth.",
   "type": "object",
-  "required": ["metric_version", "generated_at"],
+  "required": [
+    "metric_version",
+    "generated_at",
+    "generated_by",
+    "project",
+    "mode",
+    "git",
+    "metrics",
+    "gate_defaults"
+  ],
+  "additionalProperties": true,
   "properties": {
     "metric_version": {
       "type": "string",
-      "description": "Schema version for backward compatibility",
+      "description": "Schema version. Use v2.x for metric-object baselines.",
       "pattern": "^v\\d+\\.\\d+$"
     },
     "generated_at": {
@@ -17,137 +27,197 @@
     },
     "generated_by": {
       "type": "string",
-      "description": "Tool or agent that generated this baseline"
+      "description": "Tool, skill, script, or agent that generated this baseline"
     },
     "project": {
       "type": "string",
       "description": "Project name"
     },
-
-    "frontend_type_errors": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "D1.1: TypeScript compiler errors (vue-tsc --noEmit or tsc --noEmit). GATED."
+    "mode": {
+      "type": "string",
+      "enum": ["init-baseline", "baseline-migration"],
+      "description": "Baselines are only written from explicit baseline modes"
     },
-    "frontend_suppressions_count": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "D1.3: @ts-ignore/@ts-expect-error/@ts-nocheck count in frontend. GATED."
-    },
-    "generated_suppressions_count": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "D1.3: Suppressions in generated files (excluded from gate). OBSERVED."
-    },
-
-    "backend_lint_errors": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "D1.2: Critical/error-level lint issues (ruff/eslint). OBSERVED."
-    },
-    "backend_lint_warnings": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "D1.2: Warning-level lint issues. OBSERVED."
-    },
-    "backend_type_suppressions": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "D1.3: # type: ignore suppressions in backend. OBSERVED."
-    },
-
-    "skip_xfail_count": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "D3.1: @pytest.mark.skip + @pytest.mark.xfail count. GATED."
-    },
-    "test_placeholder_assert_count": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "D3.2: Placeholder 'pass' in test bodies. OBSERVED."
-    },
-    "test_coverage_percent": {
-      "type": "number",
-      "minimum": 0,
-      "maximum": 100,
-      "description": "D3.3: Test coverage percentage. OBSERVED."
-    },
-
-    "backend_todo_count": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "D6.3: TODO/FIXME/HACK/XXX count in backend. OBSERVED."
-    },
-    "backend_placeholder_count": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "D1.4: Placeholder implementations (pass/TODO/notImplemented). OBSERVED."
-    },
-    "large_file_count_python": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "D1.4: Python files exceeding line limit. OBSERVED."
-    },
-    "large_file_count_frontend": {
-      "type": "integer",
-      "minimum": 0,
-      "description": "D1.4: Vue/TS files exceeding line limit. OBSERVED."
-    },
-
-    "backend_static_code_analysis": {
+    "git": {
       "type": "object",
-      "description": "D1/D6: Detailed static analysis breakdown",
+      "required": ["sha", "dirty_worktree"],
+      "additionalProperties": true,
       "properties": {
-        "files_analyzed": { "type": "integer" },
-        "total_issues": { "type": "integer" },
-        "critical_issues": { "type": "integer" },
-        "warning_issues": { "type": "integer" },
-        "suggestion_issues": { "type": "integer" },
-        "docstring_issues": { "type": "integer" },
-        "type_annotation_issues": { "type": "integer" },
-        "pydantic_issues": { "type": "integer" },
-        "import_issues": { "type": "integer" },
-        "security_issues": { "type": "integer" },
-        "endpoint_function_issues": { "type": "integer" }
+        "sha": {
+          "type": "string",
+          "description": "Commit measured for this baseline"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "dirty_worktree": {
+          "type": "boolean",
+          "description": "Whether uncommitted changes were present during measurement"
+        },
+        "dirty_summary": {
+          "type": "string"
+        }
       }
     },
-
-    "backend_api_documentation": {
+    "tool_versions": {
       "type": "object",
-      "description": "D4.1: API documentation coverage",
-      "properties": {
-        "total_endpoints": { "type": "integer" },
-        "documented_count": { "type": "integer" },
-        "documented_percentage": { "type": "number" },
-        "examples_count": { "type": "integer" },
-        "examples_percentage": { "type": "number" },
-        "error_response_percentage": { "type": "number" },
-        "total_issues": { "type": "integer" }
-      }
+      "description": "Versions of relevant measurement tools such as node, npm, tsc, eslint, pytest, ruff, cargo"
     },
-
-    "dimension_ratings": {
-      "type": "object",
-      "description": "Per-dimension ratings at baseline time",
-      "properties": {
-        "D1_code_quality": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
-        "D2_architecture": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
-        "D3_testing": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
-        "D4_documentation": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
-        "D5_dependencies": { "type": "string", "enum": ["A", "B", "C", "D", "E"] },
-        "D6_process_security": { "type": "string", "enum": ["A", "B", "C", "D", "E"] }
-      }
-    },
-
-    "gated_metrics": {
+    "metrics": {
       "type": "array",
-      "items": { "type": "string" },
-      "description": "List of metric keys that are hard-gated (must not exceed baseline)"
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/metric"
+      }
     },
-    "observed_metrics": {
+    "gate_defaults": {
+      "type": "object",
+      "required": ["hard", "soft"],
+      "additionalProperties": false,
+      "properties": {
+        "hard": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Metric IDs or glob-like metric patterns hard-gated by default"
+        },
+        "soft": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Metric IDs or patterns observed for warning/drift"
+        }
+      }
+    },
+    "notes": {
       "type": "array",
-      "items": { "type": "string" },
-      "description": "List of metric keys that are observed (regressions reported but not blocking)"
+      "items": {
+        "type": "string"
+      }
+    },
+    "legacy_metrics": {
+      "type": "object",
+      "description": "Optional read-only carryover from pre-v2 flat baselines. Do not write new metrics here."
+    }
+  },
+  "definitions": {
+    "metric": {
+      "type": "object",
+      "required": [
+        "id",
+        "dimension",
+        "scope",
+        "kind",
+        "value",
+        "unit",
+        "tool",
+        "command_id",
+        "source_roots",
+        "excludes",
+        "measured_at",
+        "git_sha",
+        "dirty_worktree",
+        "gate",
+        "status"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_\\.:-]*$",
+          "description": "Stable metric key, scoped when needed, e.g. backend_type_errors"
+        },
+        "dimension": {
+          "type": "string",
+          "enum": ["D1", "D2", "D3", "D4", "D5", "D6"]
+        },
+        "scope": {
+          "type": "string",
+          "description": "Measured area such as backend, frontend, repo, package name, or path group"
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["Measured", "Inferred", "Historical Baseline"]
+        },
+        "value": {
+          "description": "Measured value",
+          "oneOf": [
+            { "type": "number" },
+            { "type": "integer" },
+            { "type": "boolean" },
+            { "type": "string" },
+            { "type": "array" },
+            { "type": "object" },
+            { "type": "null" }
+          ]
+        },
+        "unit": {
+          "type": "string",
+          "examples": ["count", "percent", "status", "files", "bytes"]
+        },
+        "tool": {
+          "type": "string"
+        },
+        "command_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_:-]*$"
+        },
+        "source_roots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "excludes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "line_count_method": {
+          "type": "string",
+          "description": "Required for file length metrics"
+        },
+        "measured_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "git_sha": {
+          "type": "string"
+        },
+        "dirty_worktree": {
+          "type": "boolean"
+        },
+        "gate": {
+          "type": "string",
+          "enum": ["hard", "soft", "none"]
+        },
+        "target": {
+          "description": "Desired threshold for gated metrics"
+        },
+        "baseline_value": {
+          "description": "Approved baseline value when comparing drift"
+        },
+        "drift": {
+          "description": "Numeric or structured delta from baseline"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pass", "warn", "fail", "unavailable", "not_applicable"]
+        },
+        "reason": {
+          "type": "string",
+          "description": "Required when status is unavailable or not_applicable"
+        }
+      }
     }
   }
 }

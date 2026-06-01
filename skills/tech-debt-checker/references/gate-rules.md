@@ -1,104 +1,158 @@
 # Gate Rules Reference
 
+This reference defines deterministic default rules. Project governance may tighten these rules, but reports must clearly state any override.
+
 ## Gate Model
 
-The tech debt governance gate uses an AND model across gated dimensions. ALL gated metrics must pass for overall gate status PASS.
+Hard gates decide FAIL. Soft gates decide WARN. Observed metrics provide context and remediation priority.
 
-### Gate Status Values
+| Gate | Meaning |
+|------|---------|
+| `hard` | Must pass absolute target or must not regress beyond approved baseline |
+| `soft` | Should not regress; regression produces WARN unless project policy escalates |
+| `none` | Informational metric only |
+
+## Gate Status Values
 
 | Status | Meaning |
 |--------|---------|
-| **PASS** | All gated metrics ≤ baseline, no critical findings |
-| **WARN** | All gated metrics pass, but observed metrics regressed or ratings declined |
-| **FAIL** | One or more gated metrics exceed baseline |
+| `PASS` | All hard gates pass and no critical findings exist |
+| `WARN` | Hard gates pass, but soft/observed metrics regressed or ratings declined |
+| `FAIL` | Any hard gate fails, required gated metric is unavailable, or critical finding exists |
 
-## Default Gated Metrics
+## Default Hard Gates
 
-These metrics are hard-gated by default (must NOT exceed baseline):
+Use these by default unless the project has stricter governance.
 
-| Metric Key | Dimension | Threshold Rule |
-|-----------|-----------|---------------|
-| `frontend_type_errors` | D1 | Must equal 0, or not exceed baseline |
-| `frontend_suppressions_count` | D1 | Must not exceed baseline |
-| `skip_xfail_count` | D3 | Must not exceed baseline |
-| `backend_api_documentation.total_issues` | D4 | Must not exceed baseline |
+| Metric Pattern | Dimension | Rule |
+|----------------|-----------|------|
+| `*_type_errors` | D1 | Must equal `0` |
+| `*_lint_errors` | D1 | Must equal `0` unless the project explicitly baselines lint errors |
+| `test_failed` | D3 | Must equal `0` |
+| `secrets_in_code` | D6 | Must equal `0` |
+| `critical_cve_count` | D5 | Must equal `0` |
+| `high_cve_count` | D5 | Must equal `0` unless project policy defines a temporary exception |
+| `debt_exception_expired` | D6 | Must equal `0` |
+| `debt_exception_missing_owner` | D6 | Must equal `0` |
+| `debt_exception_missing_ttl` | D6 | Must equal `0` |
+| gated suppression counts | D1/D3 | Must not exceed approved baseline |
+| gated skip/xfail counts | D3 | Must not exceed approved baseline |
 
-## Default Observed Metrics
+Required hard-gate metrics that are unavailable cause `FAIL` unless the metric is explicitly `not_applicable` with evidence, such as "no test framework configured".
 
-These metrics are tracked but NOT hard-gated (regressions reported but non-blocking):
+## Default Soft/Observed Metrics
 
-| Metric Key | Dimension | Typical Threshold |
-|-----------|-----------|------------------|
-| `backend_todo_count` | D6 | Track trend, flag if >20% increase |
-| `backend_placeholder_count` | D1 | Track trend, flag if >20% increase |
-| `test_placeholder_assert_count` | D3 | Track trend, flag if >20% increase |
-| `backend_lint_errors` | D1 | Track trend, flag if >20% increase |
-| `backend_lint_warnings` | D1 | Track trend, flag if >30% increase |
-| `backend_type_suppressions` | D1 | Track trend, flag if >20% increase |
-| `large_file_count_python` | D1 | Track trend, flag if increasing |
-| `large_file_count_frontend` | D1 | Track trend, flag if increasing |
+| Metric Pattern | Dimension | Rule |
+|----------------|-----------|------|
+| `*_lint_warnings` | D1 | Warn when above baseline or target |
+| `large_file_count_*` | D1/D2 | Warn when above baseline or target |
+| `god_file_count_*` | D2 | Warn when above baseline or target |
+| `skip_xfail_count` when not hard-gated | D3 | Warn when above baseline |
+| `test_coverage_percent` | D3 | Warn when below baseline or target |
+| `todo_count_*`, `fixme_count_*`, `hack_count_*`, `xxx_count_*` | D6 | Warn when above baseline |
+| `outdated_deps_*` | D5 | Warn when above baseline or contains major upgrades |
+| documentation completeness metrics | D4 | Warn when below target |
 
-## Project-Specific Override
+## Baseline Comparison
 
-Projects can override gate rules via their governance charter or baseline JSON:
-- Add/remove metrics from gated/observed lists
-- Set custom thresholds (e.g., "skip_xfail must be < 20" regardless of baseline)
-- Define dimension-specific passing criteria
+When a baseline exists:
+
+- Match metrics by `id`.
+- Compare current `value` to `baseline_value`.
+- Record `drift` and `status` for every metric.
+- Mark new metrics as `new`; removed baseline metrics as `removed`.
+- Do not write "no baseline" language.
+- Do not use historical baseline values as current measurements.
+
+When no baseline exists:
+
+- Produce measurements and a baseline candidate.
+- Apply absolute hard targets where possible, such as secrets = 0 and failing tests = 0.
+- Do not claim drift.
 
 ## Dimension Rating Rules
 
+Ratings are deterministic before any narrative interpretation.
+
+### Global Overrides
+
+- Any hard gate failure in a dimension makes that dimension `E`.
+- Any unavailable required hard-gate metric makes that dimension `E`.
+- `test_failed > 0` makes D3 `E`.
+- Any secrets finding makes D6 `E`.
+- Any critical/high CVE finding makes D5 `E`.
+- Any expired or malformed debt exception makes D6 `E`.
+
 ### D1: Code Quality
-- **A**: 0 type errors, 0 suppressions, 0 large files
-- **B**: 0 type errors, ≤5 suppressions, ≤3 large files
-- **C**: 0 type errors, ≤10 suppressions, ≤7 large files
-- **D**: >0 type errors or >10 suppressions or >7 large files
-- **E**: >5 type errors or gated metric regression
+
+- `A`: 0 type errors, 0 lint errors, no suppression regressions, no large-file regression.
+- `B`: hard gates pass; only minor warning debt.
+- `C`: hard gates pass; significant stable warning/large-file debt.
+- `D`: hard gates pass; major observed regression.
+- `E`: type/lint hard gate failure or unavailable required hard-gate metric.
+
+### D2: Architecture
+
+- `A`: no circular deps, no god-file/class candidates above target.
+- `B`: minor stable structural debt.
+- `C`: significant stable structural debt.
+- `D`: major structural regression or unmanaged god-file growth.
+- `E`: architecture hard gate fails if configured.
 
 ### D3: Testing
-- **A**: 0 skip/xfail, 0 placeholder asserts, coverage >80%
-- **B**: ≤5 skip/xfail, ≤10 placeholders, coverage >60%
-- **C**: ≤15 skip/xfail, ≤30 placeholders, coverage >40%
-- **D**: ≤30 skip/xfail or coverage >20%
-- **E**: >30 skip/xfail or gated metric regression
+
+- `A`: 0 failing tests, no skip/xfail regression, coverage at/above target.
+- `B`: 0 failing tests; minor observed testing debt.
+- `C`: 0 failing tests; low but stable coverage or high stable skips.
+- `D`: 0 failing tests; testing debt regressed materially.
+- `E`: any failing test, unavailable required test metric, or hard-gated skip/xfail regression.
+
+Do not describe pass rate as coverage.
 
 ### D4: Documentation
-- **A**: 100% API doc coverage, all endpoints have examples
-- **B**: >95% API doc coverage, >90% examples
-- **C**: >80% API doc coverage, >70% examples
-- **D**: >60% API doc coverage
-- **E**: <60% API doc coverage or gated metric regression
+
+- `A`: required operator/API/governance docs present and current.
+- `B`: minor documentation gaps.
+- `C`: important but non-blocking gaps.
+- `D`: stale or missing release-critical docs.
+- `E`: documentation hard gate fails if configured.
 
 ### D5: Dependencies
-- **A**: 0 vulnerable deps, 0 outdated critical deps
-- **B**: 0 vulnerable deps, ≤5 outdated non-critical
-- **C**: 0 critical CVEs, ≤10 outdated
-- **D**: ≤2 critical CVEs
-- **E**: >2 critical CVEs or >20 outdated
+
+- `A`: 0 known CVEs, no major unmanaged outdated dependency risk.
+- `B`: 0 known CVEs, minor upgrade lag.
+- `C`: 0 high/critical CVEs, significant managed upgrade lag.
+- `D`: non-critical vulnerability debt or unmanaged major migration risk.
+- `E`: critical/high CVE hard gate failure.
 
 ### D6: Process & Security
-- **A**: 0 SAST high/critical, 0 secrets, governance gate always passes
-- **B**: 0 SAST critical, ≤5 high, 0 secrets
-- **C**: ≤2 SAST critical, ≤10 high, 0 secrets
-- **D**: ≤5 SAST critical
-- **E**: >5 SAST critical or secrets found or governance gate always fails
 
-## New-Code vs Overall-Code Distinction
-
-Following SonarQube's model:
-- **New code** (since last baseline): Stricter thresholds, zero-tolerance for regressions
-- **Overall code**: Track trends, allow gradual improvement plans
-
-When gating:
-- New regressions in new code → automatic FAIL (regardless of severity)
-- Pre-existing issues in overall code → WARN with remediation plan
+- `A`: 0 secrets, 0 expired/malformed exceptions, no SAST high/critical findings.
+- `B`: hard gates pass; minor process debt.
+- `C`: hard gates pass; significant but stable process debt.
+- `D`: process/security observed metrics regressed materially.
+- `E`: secrets, expired/malformed exceptions, SAST hard gate, or governance hard gate failure.
 
 ## Exception Handling
 
-Debt exceptions are allowed with:
-- **Owner**: Responsible developer
-- **TTL**: Expiration date (auto-flagged when expired)
-- **Reason**: Justification
-- **Issue**: Tracking issue number
-- **Remediation plan**: How and when to fix
+Debt exceptions require:
 
-Expired exceptions count as violations in the gate check.
+- Owner.
+- TTL.
+- Reason.
+- Issue or remediation tracking when project policy requires it.
+
+Expired, missing-owner, missing-TTL, or malformed exceptions are hard gate failures by default.
+
+## Project-Specific Override
+
+Projects may override rules in governance files or baseline metadata. Reports must name the source and show the effective rule. Example:
+
+```json
+{
+  "gate_defaults": {
+    "hard": ["backend_type_errors", "frontend_type_errors", "test_failed", "secrets_in_code"],
+    "soft": ["backend_lint_warnings", "large_file_count_backend", "test_coverage_percent"]
+  }
+}
+```
