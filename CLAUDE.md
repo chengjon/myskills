@@ -8,3 +8,4 @@ Personal skill collection for AI coding runtimes.
 - **review2md** — `/review2md` — Evidence-driven document review with file-type and doc-type awareness, results saved as Markdown.
 - **function-tree** — `/ft:*` — FUNCTION_TREE evidence, authorization, scope, and active gate governance.
 - **myweb-audit** — `myweb-audit` — Page-by-page frontend audit and repair orchestration for route, render, responsive, accessibility, and ArtDeco checks.
+- **file-size-guard** — `/file-size-guard` — Scan files against configurable line limits with worktree dedup and delta detection.
