@@ -130,6 +130,9 @@ user-invocable: true
 - 新浪 K 线 API 无需 Referer，更稳定，优先使用
 - 东方财富 K 线 API 部分网络环境下 HTTPS 连接被拒，作为备用
 - A股代码前缀：沪市=`sh`，深市=`sz`
+- **akshare `stock_financial_abstract_ths` 数据排序**：`indicator="按年度"` 返回的 DataFrame 从旧到新排列（iloc[0] 是上市首年，iloc[-1] 是最新年度），取最新数据必须用 `df.iloc[-1]` 或按报告期筛选含 "2024"/"2025" 的行，**绝不能用 `df.iloc[0]`**
+- **腾讯行情两种格式**：`s_sz002929`（s_前缀）返回精简格式约10个字段（名称~代码~现价~涨跌额~涨跌幅~成交量~成交额~~总市值~市场类型）；`sz002929`（无s_前缀）返回完整格式约50个字段，含 PE/PB/换手率/流通市值/总市值 等。需要完整指标时用无s_格式
+- **腾讯市值字段单位是亿元**（非万元）：`total_cap` 和 `market_cap` 返回值单位为亿元，例如中科曙光返回 1262.96 即约1263亿元。估算总资产时注意：净资产=总市值/ PB，总资产=净资产/(1-资产负债率)
 
 ---
 
@@ -266,6 +269,7 @@ user-invocable: true
 | [references/data-source-urls.md](references/data-source-urls.md) | **数据源 API 参考**：新浪/东方财富 URL、参数、Header 要求、选择策略 |
 | [references/stock_code_format.md](references/stock_code_format.md) | 股票代码格式参考 |
 | [references/openclaw_integration.md](references/openclaw_integration.md) | openclaw 集成说明 |
+| [references/sector-concept-analysis.md](references/sector-concept-analysis.md) | **板块/概念股批量分析工作流**：板块代码搜索→成分股获取→批量行情→K线涨跌→财务数据→报告生成 |
 | [templates/analysis-template.md](templates/analysis-template.md) | 五步法分析报告模板 |
 | [templates/data-template.md](templates/data-template.md) | 数据采集模板 |
 | [examples/yili-analysis.md](examples/yili-analysis.md) | 伊利股份完整分析案例 |
@@ -363,6 +367,14 @@ user-invocable: true
 - 默认新浪财经，失败时自动尝试东方财富和雪球
 - 可通过 `--source` 参数指定数据源
 - openclaw 可选，提供 SSE/SZSE 等官方数据源
+
+## 子技能
+
+| 子技能 | 触发词 | 位置 |
+|--------|--------|------|
+| 交易复盘审计 | 复盘/审计/audit | `trade-audit/` 子目录（独立运行） |
+
+**独立性原则**：trade-audit 是独立功能，不依赖也不影响 daily-stock 工作流。不要把审计脚本混入本技能的 scripts/ 目录。本技能的 SKILL.md 必须保持 GitHub 原始版本（仅 Part A/B/C），如果发现被改了需从 GitHub 恢复。
 
 ## 免责声明
 

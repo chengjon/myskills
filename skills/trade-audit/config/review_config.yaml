@@ -1,0 +1,381 @@
+# 交易复盘系统配置 (V3)
+# 修改后下次复盘即生效，无需重启
+# V3新增: 四分法/10分制/冲动增强/黑名单/反馈/事后验证扩展/MySQL
+
+# ============================================================
+# 复盘触发
+# ============================================================
+review_time: "20:00"            # 每日复盘生成时间(T+0草稿)
+review_weekdays: [1,2,3,4,5]    # 工作日
+post_check_days: [5, 10, 20, 60] # 事后验证窗口 V3扩展四档
+post_check_time: "09:30"        # 事后验证补充时间
+
+# ============================================================
+# 风控阈值
+# ============================================================
+max_single_risk: 0.02           # 单笔最大风险占总资产2%
+max_single_position: 0.15       # 单票最高仓位15%
+max_industry_position: 0.30     # 单行业最高仓位30%
+max_total_position: 0.80        # 总仓位上限80%
+min_cash_ratio: 0.20            # 最低现金比例20%
+max_drawdown: 0.10              # 最大回撤10%
+
+# ============================================================
+# 追高/抄底检测
+# ============================================================
+chase_high_threshold: 0.05      # 追高: 买入价 ≥ 开盘价 × 1.05
+chase_high_base: "open"         # 基准价: open(开盘价) / close(昨收)
+bottom_fishing_threshold: -0.03 # 抄底: 买入时跌幅 ≤ -3%
+
+# ============================================================
+# 冲动交易检测 (V2旧版, 保留兼容)
+# ============================================================
+impulsive_trade_rule: true      # 无交易计划强制标记冲动
+impulsive_auto_score:
+  discipline: 1                 # 纪律维度自动1分
+  risk: 2                       # 风控维度自动2分(默认)
+
+# ============================================================
+# V3 冲动交易(增强版)
+# ============================================================
+impulsive_v2:
+  consecutive_losses: 3         # 连亏≥3笔
+  same_day_limit: 3             # 同日>3笔
+  atr_pctb_threshold: 90        # ATR分位>90%
+
+# ============================================================
+# V3 四分法
+# ============================================================
+rule_inside:
+  require_stop_loss: true       # 必须有止损
+  require_position_pass: true   # 仓位必须合规
+  require_trend_follow: true    # 必须顺势买入
+
+# ============================================================
+# V3 10分制评分
+# ============================================================
+scoring:
+  entry_weight: 3               # 入场评分满分3
+  exit_weight: 3                # 卖出评分满分3
+  discipline_weight: 2          # 纪律评分满分2
+  risk_weight: 2                # 风控评分满分2
+  total_max: 10
+  stop_loss_good_range: [3, 8]  # 止损幅度3-8%为合理(1.0分)
+  stop_loss_wide_threshold: 8   # 止损>8%过宽(0.5分)
+  single_risk_good: 2           # 单笔风险<=2%为优(1.0分)
+  single_risk_warn: 4           # 单笔风险2-4%警告(0.5分)
+  sell_early_5d: 0.02           # early判定: 卖出后5日涨>2%
+  sell_early_10d: 0.05          # early判定: 卖出后10日涨>5%
+
+# ============================================================
+# V3 黑名单
+# ============================================================
+blacklist:
+  total_loss_pct: 0.15          # 累计亏损>15%
+  loss_count: 3                 # 亏损≥3次
+  outside_loss_count: 2         # 规则外亏损≥2次
+
+# ============================================================
+# V3 错误分类
+# ============================================================
+allowed_mistakes:
+  - 入场过早
+  - 入场过晚
+  - 未等信号
+  - 追高
+  - 逆势抄底
+  - 逆势追高
+  - 未及时止盈
+  - 止损不坚决
+  - 无止损
+  - 仓位过重
+  - 行业集中
+  - 连亏后冲动
+  - 无计划交易
+  - 卖飞后追回
+  - 卖出过早
+  - 卖出过晚
+  - 无错(市场正常波动)
+
+# ============================================================
+# V3 反馈动作
+# ============================================================
+feedback:
+  blacklist_score_threshold: 0    # 黑名单→blacklist(无条件)
+  exclude_score_threshold: 5      # 规则外亏损+总分<5→exclude
+  observe_on_outside_profit: true # 规则外盈利→observe
+  improve_score_threshold: 6      # 冲动+总分<6→improve_template
+  plan_ready_score_threshold: 7   # 规则内+总分≥7→plan_ready
+
+# ============================================================
+# V3 卖出审计判定
+# ============================================================
+sell_audit:
+  verdict_rules:
+    correct: "卖出后5/10日继续下跌"
+    missed: "卖出后20日内创新高(>持仓期最高价)"
+    early: "卖出后5日小涨(>2%), 10日大涨(>5%)"
+    normal: "其他"
+  timing_scores:
+    plan_sell: ["止损", "止盈", "目标价"]          # → 1.0
+    subjective_sell: ["主观判断", "换股", "减仓"]   # → 0.5
+    emotional_sell: ["恐慌", "追回", "情绪化"]      # → 0.0
+
+# ============================================================
+# 事前评分阈值 (V2旧版30分制, @deprecated)
+# ============================================================
+pre_excellent: 24               # >=24 优质 🟢
+pre_good: 18                    # >=18 一般 🟡
+# <18 问题 🔴
+
+pre_weights:                    # 评分权重(V2旧版, @deprecated)
+  trend: 1.0
+  position: 1.0
+  sector: 1.0
+  market: 1.0
+  risk: 1.0
+  discipline: 1.0
+
+# ============================================================
+# 事后评分阈值 (V2旧版25分制, @deprecated)
+# ============================================================
+post_excellent: 20              # >=20 验证成功 ✅
+post_good: 13                   # >=13 中性 ⚠️
+# <13 验证失败 ❌
+
+post_weights:                   # 事后评分权重(V2旧版, @deprecated)
+  direction: 1.0
+  timing: 1.0
+  stop_effect: 1.0
+  profit_ratio: 1.0
+  hold_quality: 1.0
+
+# ============================================================
+# 盈亏比计算
+# ============================================================
+cost_adjust_profit: true        # 扣除交易成本计算真实盈亏
+commission_rate: 0.00025        # 佣金率 万2.5
+min_commission: 5.0             # 最低佣金5元/笔(A股规定)
+stamp_tax_rate: 0.0005          # 印花税(卖出) 万5
+transfer_rate: 0.00001          # 过户费 万0.1
+profit_ratio_method: "plan_stop"  # 盈亏比基准: plan_stop(计划止损价) / atr(ATR倒推)
+
+# ============================================================
+# 杜绝结果论规则
+# ============================================================
+result_bias_rule: true          # 启用杜绝结果论
+
+# ============================================================
+# 概率容错机制
+# ============================================================
+quality_win_rate_threshold: 0.50  # 优质决策胜率>50%体系有效
+quality_lose_rate_threshold: 0.40 # 优质决策胜率<40%需调整策略
+
+# ============================================================
+# 异常交易强制复盘条件
+# ============================================================
+force_review_conditions:
+  over_position: true           # 超仓(单笔风险>max_single_risk)
+  no_stoploss: true             # 无止损
+  overnight_heavy: 0.50         # 隔夜重仓(仓位>50%)
+  reverse_heavy: true           # 逆势重仓(大盘下跌+仓位>30%)
+  chase_high_no_plan: true      # 追高+无计划
+  impulsive_trade: true         # 冲动交易
+
+# ============================================================
+# 大盘评分阈值
+# ============================================================
+market_up_threshold: 0.5          # 涨幅>0.5%判为上涨
+market_down_threshold: -0.5       # 跌幅<-0.5%判为下跌
+
+# ============================================================
+# 复盘规则
+# ============================================================
+need_empty_review: true         # 空仓日也复盘(评估机会成本)
+auto_generate_action: true      # 自动生成整改行动清单
+
+# ============================================================
+# 数据源 (V3: tencent主数据源, sina降为备用)
+# ============================================================
+data_sources:
+  realtime: "tencent"           # 实时行情: tencent(主) / sina(备用)
+  kline: "tencent"              # K线数据: tencent(主) / sina(备用)
+  sector: "tencent"             # 行业/概念: tencent(主) / sina(备用)
+  news: "eastmoney"             # 新闻: eastmoney
+  money_flow: "eastmoney"       # 资金流向: eastmoney
+  tdxquant:                     # V3: TdxQuant主数据源(优先级最高)
+    enabled: true
+    python_path: "/mnt/c/Users/John Cheng/AppData/Local/Programs/Python/Python312/python.exe"
+    base_dir: "/opt/iflow/TdxQuant"
+
+# ============================================================
+# 输出路径
+# ============================================================
+output:
+  vault: "/mnt/c/Users/John Cheng/Documents/Obsidian Vault"
+  review_dir: "mystocks/复盘"
+  template_dir: "mystocks/复盘/模板"
+  exception_dir: "mystocks/复盘/异常交易"
+
+# ============================================================
+# V3 15分钟K线买卖位置评分 (新增)
+# ============================================================
+intraday_15m:
+  enabled: true
+  # 入场时间段评分 (基于历史胜率加权)
+  entry_time_slot_scores:
+    morning_early: 0.7       # 早盘胜率45%, 笔均+64
+    morning_mid: 0.5         # 上午中段胜率48%, 笔均-372
+    morning_late: 0.6        # 午前胜率54%, 笔均-285
+    afternoon_early: 1.0     # 午后开盘胜率67%, 笔均+291 ← 最优
+    afternoon_mid: 0.8       # 下午中段胜率51%, 笔均-27
+    afternoon_late: 0.6      # 尾盘胜率42%, 笔均-372
+  # 入场前趋势评分
+  entry_trend_15m_scores:
+    continuous_up: 0.3       # 追涨: 胜率26%, 笔均-453 ← 最差
+    mostly_up: 0.5           # 偏涨: 胜率47%, 笔均-211
+    sideways: 0.7            # 震荡: 胜率49%, 笔均+6
+    mostly_down: 0.8         # 偏跌抄底: 胜率45%, 笔均+83
+    continuous_down: 0.9     # 抄底: 胜率42%, 笔均+142 ← 注意: 胜率不高但盈亏比好
+  # 15分BOLL入场位置评分
+  entry_boll_15m_scores:
+    lower: 0.9               # 下轨区(≤20): 胜率44%, 日线+15分双层下轨胜率56-65%
+    middle: 0.7              # 中轨区(20-80): 胜率50%
+    upper: 0.4               # 上轨区(>80): 胜率46%, 日线+15分双层上轨胜率23-36% ← 最差
+  # 买入后1小时走势预期
+  first_hour_expected:
+    continuous_up: "positive"  # 买后首小时连续上涨→正面
+    sideways: "neutral"        # 震荡→中性
+    continuous_down: "negative" # 买后首小时连续下跌→负面, 胜率31%
+    v_shape: "negative"        # V型反转, 胜率13%
+  # 买卖BOLL对称性
+  symmetry_bonus:
+    low_buy_high_sell: 0.5     # sym≤0(BOLL低买高卖): 胜率64%, 笔均+632 → 加分
+    high_buy_low_sell: -0.5    # sym>0(BOLL高买低卖): 胜率31%, 笔均-645 → 减分
+  # 价格在K线中的位置
+  price_position_scores:
+    low_zone: 0.6           # 0-0.2: 胜率41%, 买在K线低位(接近low)
+    mid_low: 0.7            # 0.2-0.5: 胜率46%
+    mid_high: 0.9           # 0.5-0.8: 胜率52%, 笔均+378 ← 最优
+    high_zone: 0.4          # 0.8-1.0: 胜率44%, 笔均-318 ← 买在K线高位
+
+# ============================================================
+# 账户信息
+# ============================================================
+accounts:
+  - name: "平安两融"
+    id: "302199966809"
+    type: "margin"
+  - name: "平安普通"
+    id: "302119114015"
+    type: "normal"
+  - name: "国金QMT"
+    id: "8886873933"
+    type: "normal"
+
+# ============================================================
+# MySQL
+# ============================================================
+mysql:
+  host: "192.168.123.104"
+  port: 3306
+  user: "root"
+  password: ""                  # 从环境变量 MYSQL_PWD 读取
+  database: "hermes"
+
+# ============================================================
+# V4 6维15分评分体系 (2026-06-04 新增)
+# ============================================================
+v4_scoring:
+  # 入场时机阈值
+  boll_mid_threshold: 50.0        # BOLL %b > 50% 判为中轨上方
+  boll_upper_threshold: 80.0      # BOLL %b > 80% 判为上轨区(追高嫌疑)
+  boll_extreme_threshold: 95.0    # BOLL %b > 95% 判为极端高位
+  trend_up_values:                # 上升趋势判定值
+    - bull
+    - strong_up
+    - up
+  trend_down_values:              # 下降趋势判定值
+    - bear
+    - strong_down
+    - down
+
+  # 入场质量阈值
+  price_position_good: 0.3        # K线内位置 < 0.3 判为好位置
+  volume_ratio_min: 1.0           # 量比 > 1.0 判为正常
+
+  # 卖出判定阈值
+  verdict:
+    at_low_tolerance: 0.01        # 卖在最低附近容差 1%
+    at_high_tolerance: 0.01       # 卖在最高附近容差 1%
+    panic_drop_threshold: -3.0    # 卖后5日跌 > 3% 判恐慌
+    discipline_hold_days: 20      # 持仓 >= 20天 判纪律卖点
+    discipline_profit_pct: 15.0   # 盈利 >= 15% 判纪律卖点
+    missed_profit_threshold: 8.0  # 卖后20日涨 > 8% 判卖飞
+    late_stop_threshold: -3.0     # 卖后5日跌 > 3% 判晚止损
+
+  # 风控执行阈值
+  risk:
+    drawdown_max: 0.05            # 持仓期内最大回撤 < 5%
+    loss_max_pct: -8.0            # 单笔亏损幅度 < 8%
+    position_max: 15.0            # 仓位 <= 15%
+
+  # 行为标签阈值
+  behavior:
+    chase_high_boll: 80.0         # BOLL > 80% + 非上升趋势 = 追高
+    bottom_fishing_boll: 20.0     # BOLL < 20% + 下降趋势 = 抄底
+    consecutive_losses: 4         # 连亏 >= 4笔 = 冲动 (V4.1: 从3提高到4)
+    same_day_limit: 4             # 同日 >= 4笔 = 冲动 (V4.1: 从3提高到4)
+    impulsive_soft_combo: 2       # is_impulsive + (连亏或同日>=2) = 冲动
+    heavy_position: 15.0          # 仓位 > 15% = 重仓
+    boll_extreme_low: 5.0         # BOLL < 5% = 极端 (收窄自10%)
+    boll_extreme_high: 95.0       # BOLL > 95% = 极端 (收窄自90%)
+
+  # 交易效率阈值
+  efficiency:
+    profit_drawdown_max: 3.0      # 盈利交易: max_drawdown < 3% 判盈亏比好
+    profit_min_rate: 5.0          # 盈利交易: pnl > 5% 判盈亏比好
+    daily_return_min: 0.2         # 持仓效率 > 0.2%/天 判高效
+    loss_mild_threshold: -3.0     # 亏损交易: 亏 < 3% 可得1分
+
+  # 六级分类阈值
+  grade:
+    A: 12                         # >= 12 + 盈利
+    B: 9                          # >= 9 + 盈利
+    C_profit: 0                   # < 9 + 盈利
+    D_loss: 9                     # >= 9 + 亏损
+    E_min: 6                      # 6-8 + 亏损
+    F_max: 5                      # <= 5 + 亏损
+
+  # 统计可靠性
+  stats:
+    min_sample_size: 30           # 样本 < 30 只做描述统计
+
+  # V4.1 规则引擎 (基于363笔分析发现的模式)
+  rules:
+    entry:
+      - name: "禁止BOLL极端追高"
+        condition: "stk_boll_pctb > 90 AND stk_trend not in (bull,strong_up,up)"
+        action: "block_entry"
+        reason: "追高+BOLL极端组合盈亏平衡，且过晚止损会导致大亏"
+      - name: "顺势入场优先"
+        condition: "stk_trend not in (bull,strong_up,up)"
+        action: "reduce_score"
+        score_penalty: 1
+        reason: "89%逆势入场导致持仓体验差"
+    exit:
+      - name: "移动止盈"
+        condition: "pnl_rate > 10"
+        action: "trailing_stop"
+        trailing_percent: 5
+        reason: "62笔missed_profit(卖早了)合计少赚约5万"
+      - name: "止损不延期"
+        condition: "pnl_rate < -5 AND hold_days > 5"
+        action: "force_stop"
+        reason: "过晚止损47笔均亏-3.7%,合计亏6.5万"
+    behavior:
+      - name: "连亏冷却"
+        condition: "consecutive_losses >= 3"
+        action: "cooldown"
+        cooldown_days: 3
+        reason: "连亏后冲动交易占比高"
