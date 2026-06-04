@@ -241,6 +241,114 @@ def print_scan_result(ctx, triggered, action, score):
         print(f"      → {r['id']}: {r['name']} (weight={r['weight']}, action={r['action']})")
 
 
+# ─── --check 模式: 买入前实时检查 ─────────────────────────────
+
+def run_check_mode(cur, code, stock_stats, consec_map, conn):
+    """买入前综合检查: 红灯/黄灯/绿灯"""
+    signals = []  # (level, icon, message)
+    # level: RED / YELLOW / GREEN
+    today = date.today()
+
+    # 1. 黑名单检查
+    if code in BLACKLIST:
+        signals.append(('RED', '❌', f'黑名单股票({BLACKLIST[code]}) — 禁止买入'))
+    else:
+        signals.append(('GREEN', '✅', f'非黑名单股票'))
+
+    # 2. 感情股检查
+    ss = stock_stats.get(code, {})
+    ss_cnt = ss.get('cnt', 0)
+    ss_pnl = ss.get('total_pnl', 0)
+    ss_wr_dec = ss.get('wr_declining', False)
+    if ss_cnt >= 5 and ss_pnl < 0:
+        if ss_wr_dec:
+            signals.append(('RED', '❌', f'感情股越做越亏({ss_cnt}笔, 总亏{ss_pnl:+.0f}) — 禁止买入'))
+        else:
+            signals.append(('YELLOW', '🟡', f'感情股预警({ss_cnt}笔, 总亏{ss_pnl:+.0f})'))
+    elif ss_cnt >= 3 and ss_pnl < 0:
+        signals.append(('YELLOW', '🟡', f'同股亏损({ss_cnt}笔, 总亏{ss_pnl:+.0f})'))
+
+    # 3. 当前连亏状态(取最近一笔交易的连亏数)
+    cur.execute("""
+        SELECT id, pnl_rate FROM trade_audit 
+        WHERE buy_date IS NOT NULL ORDER BY buy_date DESC, id DESC LIMIT 1
+    """)
+    latest = cur.fetchone()
+    if latest:
+        consec = consec_map.get(latest[0], 0)
+        if consec >= 3:
+            signals.append(('RED', '❌', f'当前连亏{consec}笔 — 强制冷却3天'))
+        elif consec >= 2:
+            signals.append(('YELLOW', '🟡', f'当前连亏{consec}笔 — 仓位减半'))
+        else:
+            signals.append(('GREEN', '✅', f'当前连亏{consec}笔 — 安全'))
+
+    # 4. 同日已交易笔数
+    cur.execute("""
+        SELECT COUNT(*) FROM trade_audit 
+        WHERE buy_date = %s AND buy_date IS NOT NULL
+    """, (today.isoformat(),))
+    today_cnt = int(cur.fetchone()[0])
+    if today_cnt >= 4:
+        signals.append(('RED', '❌', f'今日已买入{today_cnt}只(上限4只) — 停止交易'))
+    elif today_cnt >= 3:
+        signals.append(('YELLOW', '🟡', f'今日已买入{today_cnt}只(接近上限)'))
+    else:
+        signals.append(('GREEN', '✅', f'今日已买入{today_cnt}只'))
+
+    # 5. 本月交易笔数
+    month_start = today.replace(day=1).isoformat()
+    cur.execute("""
+        SELECT COUNT(*) FROM trade_audit 
+        WHERE buy_date >= %s AND buy_date IS NOT NULL
+    """, (month_start,))
+    month_cnt = int(cur.fetchone()[0])
+    if month_cnt >= 30:
+        signals.append(('RED', '❌', f'本月已交易{month_cnt}笔(超限) — 停止交易'))
+    elif month_cnt >= 25:
+        signals.append(('YELLOW', '🟡', f'本月已交易{month_cnt}笔(接近30笔上限)'))
+
+    # 6. BOLL%B检查(需要从最新行情获取, 或从最近一笔该股交易获取)
+    cur.execute("""
+        SELECT stk_boll_pctb FROM trade_audit 
+        WHERE stock_code = %s AND stk_boll_pctb IS NOT NULL 
+        ORDER BY buy_date DESC LIMIT 1
+    """, (code,))
+    boll_row = cur.fetchone()
+    boll_val = float(boll_row[0]) if boll_row else None
+    if boll_val is not None:
+        if boll_val > 80:
+            signals.append(('RED', '❌', f'BOLL%B={boll_val:.0f}(极端高位) — 禁止追高'))
+        elif boll_val > 50:
+            signals.append(('YELLOW', '🟡', f'BOLL%B={boll_val:.0f}(中轨上方) — 注意Day0风险'))
+        else:
+            signals.append(('GREEN', '✅', f'BOLL%B={boll_val:.0f}(安全区间)'))
+    else:
+        signals.append(('YELLOW', '🟡', f'BOLL%B: 无历史数据'))
+
+    # ── 输出 ──
+    print("=" * 50)
+    print(f"买入前检查 | {code} | {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print("=" * 50)
+    print()
+
+    has_red = any(s[0] == 'RED' for s in signals)
+    has_yellow = any(s[0] == 'YELLOW' for s in signals)
+
+    for level, icon, msg in signals:
+        print(f"  {icon} {msg}")
+
+    print()
+    print("-" * 50)
+    if has_red:
+        print("⛔ 结论: 红灯 — 禁止买入")
+    elif has_yellow:
+        print("⚠️ 结论: 黄灯 — 建议减仓/谨慎")
+    else:
+        print("✅ 结论: 绿灯 — 可以买入")
+    print()
+
+
 # ─── 主函数 ───────────────────────────────────────────────────
 
 def main():
@@ -250,6 +358,7 @@ def main():
     parser.add_argument('--open', action='store_true', help='仅扫描未平仓交易')
     parser.add_argument('--all', action='store_true', help='全量扫描')
     parser.add_argument('--summary', action='store_true', help='仅输出统计摘要')
+    parser.add_argument('--check', type=str, help='买入前实时检查指定股票代码')
     args = parser.parse_args()
 
     pwd = os.environ.get('MYSQL_PWD', '')
@@ -260,6 +369,13 @@ def main():
     # 获取股票统计
     stock_stats = compute_stock_stats(cur)
     consec_map = precompute_consecutive_losses(cur)
+
+    # ── --check 模式: 买入前实时检查 ──
+    if args.check:
+        code = args.check.strip()
+        run_check_mode(cur, code, stock_stats, consec_map, conn)
+        conn.close()
+        return
 
     # 获取待扫描的交易
     if args.stock:

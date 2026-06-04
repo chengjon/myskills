@@ -464,3 +464,46 @@ v4_scoring:
         action: "monitor"
         weight: 0
         reason: "验证集弱有效(Δ-0.38%), 降级为监控"
+
+    # ---- 纪律清单新增 (2026-06-05) ----
+    frequency_control:
+      - name: "同日不超过4笔"
+        condition: "same_day_trades >= 4"
+        action: "block_entry"
+        weight: 1
+        reason: "同日9笔55笔avg-3.14%亏7.6万, 同日>=4笔应停止"
+      - name: "月度交易上限"
+        condition: "monthly_trades >= 30"
+        action: "warning"
+        level: "yellow"
+        weight: 0
+        reason: "2026年713笔(+95%), Day0追高翻倍, 超频需复盘"
+
+    overconfident_control:
+      - name: "大幅盈利后冷却"
+        condition: "daily_profit_pct >= 5"
+        action: "block_new_entry_next_day"
+        weight: 1
+        reason: "overconfident阶段是tilt前兆, 单日>5%盈利后不开新仓"
+
+    stop_loss:
+      - name: "单笔止损-5%"
+        condition: "pnl_rate <= -5"
+        action: "force_stop"
+        weight: 2
+        reason: "连亏4笔avg-4.29%, 触及-5%无条件卖出"
+
+    profit_stages:
+      - name: "浮盈三阶段管理"
+        stages:
+          - trigger: "max_profit_pct >= 3"
+            action: "set_breakeven_stop"
+            reason: "3%保本止损, 不让盈利变亏损"
+          - trigger: "max_profit_pct >= 5"
+            action: "trailing_stop_3pct"
+            sell_pct: 50
+            reason: "5%PCR转正, 回撤3%卖出50%仓位"
+          - trigger: "max_profit_pct >= 8"
+            action: "tighten_stop_2pct"
+            sell_pct: 100
+            reason: "8%胜率77.2%, 回撤2%卖出剩余仓位"
