@@ -531,6 +531,513 @@ def score_trade_v4(trade):
     }
 
 
+# ─── V5 测量点补全 ──────────────────────────────────────────
+
+def _get_conn():
+    """获取MySQL连接"""
+    import pymysql
+    pwd = os.environ.get("MYSQL_PWD", "")
+    return pymysql.connect(
+        host="192.168.123.104", port=3306, user="root",
+        password=pwd, database="hermes", charset="utf8mb4"
+    )
+
+
+def fill_missing_measurements(force=False):
+    """
+    V5: 补全空白测量点字段
+    - sell_boll_pctb: 卖出日BOLL %B
+    - max_drawdown_pct: 持仓期最大回撤率
+    - max_profit_pct: 持仓期最大浮盈率
+    - min_price_hold: 持仓期最低价(已有字段补充数据)
+    - profit_capture_rate: 浮盈兑现率
+    - profit_capture_grade: 浮盈兑现等级
+    - days_to_max_profit: 买入到浮盈峰值天数
+    - days_to_first_stop: 买入到首次触及止损(跌5%)天数
+    - profit_decay_rate: 浮盈衰减速度
+    - same_direction_rate: 买入后5日与MA20方向一致比例
+    - overnight_ratio: 隔夜持仓比
+    - boll_symmetry: 买卖BOLL对称
+    - mkt_above_ma20: 持仓期大盘MA20上方天数占比
+    - emotional_phase: 情绪周期阶段
+    - buy_weekday: 买入星期几
+    """
+    import pymysql
+    import numpy as np
+
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    # ── 1. 补全 sell_boll_pctb + boll_symmetry ──
+    where = "sell_boll_pctb IS NULL" if not force else "1=1"
+    cur.execute(f"""
+        SELECT id, stock_code, sell_date, stk_boll_pctb
+        FROM trade_audit WHERE {where}
+    """)
+    rows = cur.fetchall()
+    log.info(f"补全 sell_boll_pctb: {len(rows)} 笔待处理")
+
+    updated = 0
+    for row in rows:
+        tid, code, sell_date, buy_boll = row
+        # 获取卖出日前后的日线K线(需20根算MA/BOLL)
+        klines = _fetch_day_klines(cur, code, sell_date, count=30)
+        if not klines or len(klines) < 20:
+            continue
+        sell_boll = _calc_boll_pctb(klines, sell_date)
+        if sell_boll is None:
+            continue
+        symmetry = None
+        if buy_boll is not None:
+            symmetry = round(float(buy_boll) - sell_boll, 4)
+        cur.execute(
+            "UPDATE trade_audit SET sell_boll_pctb=%s, boll_symmetry=%s WHERE id=%s",
+            (sell_boll, symmetry, tid)
+        )
+        updated += 1
+    conn.commit()
+    log.info(f"sell_boll_pctb 补全: {updated}/{len(rows)}")
+
+    # ── 2. 补全 max_drawdown_pct / max_profit_pct / min_price_hold ──
+    # 先修复 max_price_hold = buy_price 的记录（从K线重算持仓期最高价）
+    cur.execute("""
+        SELECT id, stock_code, buy_date, sell_date, buy_price
+        FROM trade_audit
+        WHERE max_price_hold IS NOT NULL AND max_price_hold = buy_price
+        AND buy_date IS NOT NULL AND sell_date IS NOT NULL
+    """)
+    fix_rows = cur.fetchall()
+    log.info(f"修复 max_price_hold=buy_price: {len(fix_rows)} 笔")
+    fix_count = 0
+    for row in fix_rows:
+        tid, code, buy_date, sell_date, buy_p = row
+        cur.execute("""
+            SELECT MAX(high) FROM tdx_data.day_kline
+            WHERE stock_code=%s AND trade_date BETWEEN %s AND %s
+        """, (code, str(buy_date), str(sell_date)))
+        result = cur.fetchone()
+        if result and result[0] is not None:
+            max_p = float(result[0])
+            if max_p > float(buy_p):
+                cur.execute("UPDATE trade_audit SET max_price_hold=%s WHERE id=%s", (max_p, tid))
+                fix_count += 1
+    conn.commit()
+    log.info(f"max_price_hold 从K线修复: {fix_count}/{len(fix_rows)}")
+
+    where2 = "max_drawdown_pct IS NULL AND max_price_hold IS NOT NULL" if not force else "max_price_hold IS NOT NULL"
+    cur.execute(f"""
+        SELECT id, buy_price, sell_price, max_price_hold, hold_days
+        FROM trade_audit WHERE {where2}
+    """)
+    rows2 = cur.fetchall()
+    log.info(f"补全 max_drawdown_pct: {len(rows2)} 笔待处理")
+
+    updated2 = 0
+    for row in rows2:
+        tid, buy_p, sell_p, max_p, hold = row
+        buy_p = _safe_float(buy_p)
+        sell_p = _safe_float(sell_p)
+        max_p = _safe_float(max_p)
+        hold = _safe_float(hold, 1)
+        if max_p <= 0 or buy_p <= 0:
+            continue
+
+        max_profit_pct = round((max_p - buy_p) / buy_p * 100, 4)
+        max_drawdown_pct = round((1 - sell_p / max_p) * 100, 4) if max_p > 0 else 0
+        # min_price_hold 需从K线获取, 暂用估算: 如果有sell_price < buy_price
+        # 先只填可从已有字段算出的
+        cur.execute(
+            "UPDATE trade_audit SET max_drawdown_pct=%s, max_profit_pct=%s WHERE id=%s",
+            (max_drawdown_pct, max_profit_pct, tid)
+        )
+        updated2 += 1
+    conn.commit()
+    log.info(f"max_drawdown_pct/max_profit_pct 补全: {updated2}/{len(rows2)}")
+
+    # ── 3. 补全 min_price_hold (从K线获取持仓期最低价) ──
+    where3 = "min_price_hold IS NULL AND buy_date IS NOT NULL AND sell_date IS NOT NULL"
+    if not force:
+        where3 += ""
+    cur.execute(f"""
+        SELECT id, stock_code, buy_date, sell_date, buy_price
+        FROM trade_audit WHERE {where3}
+    """)
+    rows3 = cur.fetchall()
+    log.info(f"补全 min_price_hold: {len(rows3)} 笔待处理")
+
+    updated3 = 0
+    for row in rows3:
+        tid, code, buy_date, sell_date, buy_p = row
+        # 从tdx_data.day_kline获取持仓期最低价
+        cur.execute("""
+            SELECT MIN(low) FROM tdx_data.day_kline
+            WHERE stock_code=%s AND trade_date BETWEEN %s AND %s
+        """, (code, str(buy_date), str(sell_date)))
+        result = cur.fetchone()
+        if result and result[0] is not None:
+            min_price = float(result[0])
+            cur.execute("UPDATE trade_audit SET min_price_hold=%s WHERE id=%s",
+                        (min_price, tid))
+            updated3 += 1
+    conn.commit()
+    log.info(f"min_price_hold 补全: {updated3}/{len(rows3)}")
+
+    # ── 4. 补全 days_to_max_profit / days_to_first_stop ──
+    where4 = "days_to_max_profit IS NULL AND buy_date IS NOT NULL AND sell_date IS NOT NULL"
+    if not force:
+        where4 += ""
+    cur.execute(f"""
+        SELECT id, stock_code, buy_date, sell_date, buy_price
+        FROM trade_audit WHERE {where4}
+    """)
+    rows4 = cur.fetchall()
+    log.info(f"补全 days_to_max_profit/days_to_first_stop: {len(rows4)} 笔待处理")
+
+    updated4 = 0
+    for row in rows4:
+        tid, code, buy_date, sell_date, buy_p = row
+        buy_p = _safe_float(buy_p)
+        stop_price = buy_p * 0.95  # 止损阈值 -5%
+
+        cur.execute("""
+            SELECT trade_date, high, low FROM tdx_data.day_kline
+            WHERE stock_code=%s AND trade_date BETWEEN %s AND %s
+            ORDER BY trade_date
+        """, (code, str(buy_date), str(sell_date)))
+        klines = cur.fetchall()
+        if not klines:
+            continue
+
+        days_to_max = None
+        days_to_stop = None
+        max_high = 0
+        for i, (dt, high, low) in enumerate(klines):
+            high = _safe_float(high)
+            low = _safe_float(low)
+            if high > max_high:
+                max_high = high
+                days_to_max = i
+            if days_to_stop is None and low <= stop_price:
+                days_to_stop = i
+
+        profit_decay = None
+        if days_to_max is not None and days_to_max < len(klines) - 1:
+            days_after_peak = len(klines) - 1 - days_to_max
+            if days_after_peak > 0:
+                buy_p2 = _safe_float(buy_p)
+                sell_p = _safe_float(rows4[updated4][4] if updated4 < len(rows4) else 0)
+                # 简化: 用 max_profit_pct 和 pnl_rate 反算
+                max_profit = (max_high - buy_p2) / buy_p2 * 100 if buy_p2 > 0 else 0
+
+        cur.execute(
+            "UPDATE trade_audit SET days_to_max_profit=%s, days_to_first_stop=%s WHERE id=%s",
+            (days_to_max, days_to_stop, tid)
+        )
+        updated4 += 1
+    conn.commit()
+    log.info(f"days_to_max_profit/days_to_first_stop 补全: {updated4}/{len(rows4)}")
+
+    # ── 5. 补全 profit_capture_rate / profit_capture_grade ──
+    if force:
+        where5 = "max_profit_pct IS NOT NULL AND pnl_rate IS NOT NULL"
+    else:
+        where5 = "profit_capture_rate IS NULL AND max_profit_pct IS NOT NULL AND pnl_rate IS NOT NULL"
+    cur.execute(f"""
+        SELECT id, pnl_rate, max_profit_pct, realized_pnl
+        FROM trade_audit WHERE {where5}
+    """)
+    rows5 = cur.fetchall()
+    log.info(f"补全 profit_capture_rate: {len(rows5)} 笔待处理")
+
+    updated5 = 0
+    for row in rows5:
+        tid, pnl_r, max_prof, pnl = row
+        pnl_r = _safe_float(pnl_r)
+        max_prof = _safe_float(max_prof)
+
+        if max_prof >= 3:  # 有意义浮盈
+            pcr = round(pnl_r / max_prof, 4) if max_prof > 0 else 0
+            if pcr > 0.8:
+                grade = "优秀兑现"
+            elif pcr > 0.5:
+                grade = "部分兑现"
+            elif pcr > 0:
+                grade = "少量兑现"
+            else:
+                grade = "利润全回吐"
+        elif max_prof >= 0:
+            pcr = round(pnl_r / max_prof, 4) if max_prof > 0 else 0
+            grade = "无意义浮盈"
+        else:
+            pcr = None
+            grade = None
+
+        cur.execute(
+            "UPDATE trade_audit SET profit_capture_rate=%s, profit_capture_grade=%s WHERE id=%s",
+            (pcr, grade, tid)
+        )
+        updated5 += 1
+    conn.commit()
+    log.info(f"profit_capture_rate 补全: {updated5}/{len(rows5)}")
+
+    # ── 6. 补全 profit_decay_rate ──
+    where6 = "profit_decay_rate IS NULL AND days_to_max_profit IS NOT NULL AND max_profit_pct IS NOT NULL AND pnl_rate IS NOT NULL AND hold_days IS NOT NULL"
+    cur.execute(f"""
+        SELECT id, days_to_max_profit, hold_days, max_profit_pct, pnl_rate
+        FROM trade_audit WHERE {where6}
+    """)
+    rows6 = cur.fetchall()
+    log.info(f"补全 profit_decay_rate: {len(rows6)} 笔待处理")
+
+    updated6 = 0
+    for row in rows6:
+        tid, d_max, hold, max_prof, pnl_r = row
+        d_max = int(d_max) if d_max is not None else None
+        hold = int(hold) if hold is not None else 1
+        max_prof = _safe_float(max_prof)
+        pnl_r = _safe_float(pnl_r)
+
+        if d_max is not None and hold > d_max and max_prof > 0:
+            days_after_peak = hold - d_max
+            decay = round((max_prof - pnl_r) / days_after_peak, 4)
+            cur.execute(
+                "UPDATE trade_audit SET profit_decay_rate=%s WHERE id=%s",
+                (decay, tid)
+            )
+            updated6 += 1
+    conn.commit()
+    log.info(f"profit_decay_rate 补全: {updated6}/{len(rows6)}")
+
+    # ── 7. 补全 overnight_ratio + buy_weekday ──
+    where7 = "overnight_ratio IS NULL AND hold_days IS NOT NULL"
+    cur.execute(f"""
+        SELECT id, hold_days, buy_date FROM trade_audit WHERE {where7}
+    """)
+    rows7 = cur.fetchall()
+    log.info(f"补全 overnight_ratio/buy_weekday: {len(rows7)} 笔待处理")
+
+    updated7 = 0
+    for row in rows7:
+        tid, hold, buy_date = row
+        hold = int(hold) if hold else 1
+        # 隔夜比 = (持仓天数-1) / 持仓天数 (T+0无隔夜)
+        ovr = round((hold - 1) / hold, 4) if hold > 1 else 0.0
+
+        # 星期几
+        from datetime import datetime as dt
+        weekday = None
+        if buy_date:
+            try:
+                d = dt.strptime(str(buy_date)[:10], "%Y-%m-%d")
+                weekday = d.isoweekday()  # 1=周一 5=周五
+            except:
+                pass
+
+        cur.execute(
+            "UPDATE trade_audit SET overnight_ratio=%s, buy_weekday=%s WHERE id=%s",
+            (ovr, weekday, tid)
+        )
+        updated7 += 1
+    conn.commit()
+    log.info(f"overnight_ratio/buy_weekday 补全: {updated7}/{len(rows7)}")
+
+    # ── 8. 补全 same_direction_rate (买入后5日vs MA20方向) ──
+    where8 = "same_direction_rate IS NULL AND buy_date IS NOT NULL"
+    cur.execute(f"""
+        SELECT id, stock_code, buy_date, sell_date FROM trade_audit WHERE {where8}
+    """)
+    rows8 = cur.fetchall()
+    log.info(f"补全 same_direction_rate: {len(rows8)} 笔待处理")
+
+    updated8 = 0
+    for row in rows8:
+        tid, code, buy_date, sell_date = row
+        # 获取买入后5个交易日的收盘价和MA20
+        cur.execute("""
+            SELECT trade_date, close_price FROM tdx_data.day_kline
+            WHERE stock_code=%s AND trade_date >= %s ORDER BY trade_date LIMIT 25
+        """, (code, str(buy_date)))
+        klines = cur.fetchall()
+        if len(klines) < 6:
+            continue
+
+        # 需要MA20: 取前20根+后5根
+        buy_dt = str(buy_date)
+        # 获取买入前的K线来算MA20
+        cur.execute("""
+            SELECT trade_date, close_price FROM tdx_data.day_kline
+            WHERE stock_code=%s AND trade_date < %s ORDER BY trade_date DESC LIMIT 20
+        """, (code, buy_dt))
+        prev_klines = list(reversed(cur.fetchall()))
+
+        all_closes = [float(k[1]) for k in prev_klines] + [float(k[1]) for k in klines[:6]]
+        if len(all_closes) < 25:
+            continue
+
+        # 计算每天MA20方向
+        ma20_up_days = 0
+        total_check = 0
+        for i in range(20, min(26, len(all_closes))):
+            ma20 = sum(all_closes[i-20:i]) / 20
+            ma20_prev = sum(all_closes[i-21:i-1]) / 20 if i >= 21 else ma20
+            close_price = all_closes[i]
+            # 方向一致: 收盘价在MA20上方且MA20上升, 或下方且MA20下降
+            above_ma = close_price > ma20
+            ma_rising = ma20 > ma20_prev
+            if above_ma == ma_rising:
+                ma20_up_days += 1
+            total_check += 1
+
+        rate = round(ma20_up_days / total_check, 4) if total_check > 0 else None
+        if rate is not None:
+            cur.execute(
+                "UPDATE trade_audit SET same_direction_rate=%s WHERE id=%s",
+                (rate, tid)
+            )
+            updated8 += 1
+    conn.commit()
+    log.info(f"same_direction_rate 补全: {updated8}/{len(rows8)}")
+
+    # ── 9. 补全 mkt_above_ma20 (大盘MA20上方天数占比) ──
+    # tdx_data无指数数据，从腾讯K线API获取上证指数
+    where9 = "mkt_above_ma20 IS NULL AND buy_date IS NOT NULL AND sell_date IS NOT NULL"
+    cur.execute(f"""
+        SELECT id, buy_date, sell_date FROM trade_audit WHERE {where9}
+    """)
+    rows9 = cur.fetchall()
+    log.info(f"补全 mkt_above_ma20: {len(rows9)} 笔待处理")
+
+    # 先批量获取上证指数K线（sh000001）
+    import urllib.request
+    idx_klines_cache = {}
+    try:
+        # 获取所有涉及日期的范围
+        min_date = min(str(r[1]) for r in rows9) if rows9 else None
+        max_date = max(str(r[2]) for r in rows9) if rows9 else None
+        if min_date and max_date:
+            # 腾讯上证指数日K线: qfqday参数
+            url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh000001,day,,,500,,qfqday"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp = urllib.request.urlopen(req, timeout=15)
+            import json
+            data = json.loads(resp.read().decode())
+            # 腾讯API结构: data["data"]["sh000001"]["day"]
+            sh_data = data.get("data", {}).get("sh000001", {})
+            raw = sh_data.get("day") or sh_data.get("qfqday") or []
+            idx_klines_cache = {r[0]: float(r[2]) for r in raw if len(r) >= 3}  # date->close
+            log.info(f"上证指数K线缓存: {len(idx_klines_cache)} 根")
+    except Exception as e:
+        log.warning(f"获取上证指数K线失败: {e}")
+
+    updated9 = 0
+    if idx_klines_cache:
+        sorted_dates = sorted(idx_klines_cache.keys())
+        for row in rows9:
+            tid, buy_date, sell_date = row
+            buy_s = str(buy_date)[:10]
+            sell_s = str(sell_date)[:10]
+            # 取持仓期间的日期和收盘价
+            period_dates = [d for d in sorted_dates if buy_s <= d <= sell_s]
+            if len(period_dates) < 2:
+                continue
+            period_closes = [idx_klines_cache[d] for d in period_dates]
+            # 前置20根
+            pre_dates = [d for d in sorted_dates if d < buy_s]
+            pre_closes = [idx_klines_cache[d] for d in pre_dates[-20:]]
+            all_c = pre_closes + period_closes
+            if len(all_c) < 22:
+                continue
+            above_count = 0
+            total_days = 0
+            start_idx = len(pre_closes)
+            for i in range(start_idx, len(all_c)):
+                if i < 20:
+                    continue
+                ma20 = sum(all_c[i-20:i]) / 20
+                if all_c[i] > ma20:
+                    above_count += 1
+                total_days += 1
+            rate = round(above_count / total_days, 4) if total_days > 0 else None
+            if rate is not None:
+                cur.execute(
+                    "UPDATE trade_audit SET mkt_above_ma20=%s WHERE id=%s",
+                    (rate, tid)
+                )
+                updated9 += 1
+    conn.commit()
+    log.info(f"mkt_above_ma20 补全: {updated9}/{len(rows9)}")
+
+    # ── 10. 补全 emotional_phase (情绪周期阶段) ──
+    # 需按时间排序，逐笔计算前3笔的盈亏
+    cur.execute("""
+        SELECT id, buy_date, pnl_rate, realized_pnl FROM trade_audit
+        WHERE buy_date IS NOT NULL ORDER BY buy_date, id
+    """)
+    all_trades = cur.fetchall()
+
+    # 建立索引
+    trade_map = {}
+    for i, (tid, bd, pnl_r, pnl) in enumerate(all_trades):
+        prev_3 = [all_trades[j] for j in range(max(0, i-3), i)]
+        prev_pnls = [_safe_float(t[2]) for t in prev_3]
+
+        if len(prev_pnls) >= 3 and all(p < 0 for p in prev_pnls):
+            phase = "tilt_phase"
+        elif any(p > 5 for p in prev_pnls):
+            phase = "overconfident"
+        elif len(prev_pnls) >= 2 and prev_pnls[-1] < 0 and prev_pnls[-2] < 0:
+            phase = "frustration"
+        else:
+            phase = "neutral"
+
+        cur.execute(
+            "UPDATE trade_audit SET emotional_phase=%s WHERE id=%s",
+            (phase, tid)
+        )
+        trade_map[tid] = phase
+    conn.commit()
+    log.info(f"emotional_phase 补全: {len(all_trades)} 笔")
+
+    conn.close()
+    print(f"V5测量点补全完成")
+    return len(all_trades)
+
+
+def _fetch_day_klines(cur, code, ref_date, count=30):
+    """从tdx_data获取ref_date前的count根日K线"""
+    cur.execute("""
+        SELECT trade_date, open, high, low, close_price FROM tdx_data.day_kline
+        WHERE stock_code=%s AND trade_date <= %s ORDER BY trade_date DESC LIMIT %s
+    """, (code, str(ref_date), count))
+    rows = cur.fetchall()
+    if not rows:
+        return []
+    # 按日期正序
+    return list(reversed(rows))
+
+
+def _calc_boll_pctb(klines, target_date):
+    """计算BOLL %B (20日MA ± 2σ)"""
+    if len(klines) < 20:
+        return None
+    closes = [float(k[4]) for k in klines[-20:]]
+    import numpy as np
+    ma = np.mean(closes)
+    std = np.std(closes, ddof=0)
+    if std == 0:
+        return None
+    # target_date当天的收盘价
+    for k in reversed(klines):
+        if str(k[0]) == str(target_date):
+            close = float(k[4])
+            pctb = round((close - (ma - 2*std)) / (4*std) * 100, 4)
+            return pctb
+    # 没精确匹配，用最后一根
+    close = float(klines[-1][4])
+    pctb = round((close - (ma - 2*std)) / (4*std) * 100, 4)
+    return pctb
+
+
 # ─── 批量评分 + MySQL写入 ──────────────────────────────────
 
 def batch_score_v4(limit=None, force=False):
@@ -689,11 +1196,15 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="只评分不写入")
     parser.add_argument("--report", action="store_true", help="生成V4.1综合报告(调用report_v4.py)")
     parser.add_argument("--report-output", type=str, metavar="PATH", help="报告输出路径(配合--report)")
+    parser.add_argument("--fill-missing", action="store_true", help="V5: 补全空白测量点字段")
+    parser.add_argument("--fill-missing-force", action="store_true", help="V5: 强制重算全部测量点")
     args = parser.parse_args()
 
     load_v4_config()
 
-    if args.report:
+    if args.fill_missing or args.fill_missing_force:
+        fill_missing_measurements(force=args.fill_missing_force)
+    elif args.report:
         from report_v4 import generate_report
         import pathlib
         output = args.report_output

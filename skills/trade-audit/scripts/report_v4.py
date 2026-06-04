@@ -793,6 +793,386 @@ def generate_report(output_path=None, filter_year=None):
     L.append(f"| 连亏冷却 | 连亏>=4笔 | 冷静期 | 冲动率{impulsive_cnt/total_cnt*100:.0f}% |")
     L.append("")
 
+    # ══════════════════════════════════════════════════════════
+    # V5 扩展章节（P1: 浮盈兑现 + 情绪周期 + 同股累计画像）
+    # ══════════════════════════════════════════════════════════
+
+    # ── 十一、浮盈兑现深度分析 ──
+    L.append("## 十一、浮盈兑现深度分析")
+    L.append("")
+
+    # 11.1 总体分布
+    L.append("### 11.1 浮盈兑现等级与盈亏")
+    L.append("")
+    L.append("| 等级 | 笔数 | avg_pnl% | 总盈亏 | 胜率 | avg_max浮盈% | avg持仓天 |")
+    L.append("|------|------|----------|--------|------|-------------|-----------|")
+    cur.execute("""
+        SELECT 
+            profit_capture_grade,
+            COUNT(*) as cnt,
+            ROUND(AVG(pnl_rate), 2) as avg_pnl,
+            ROUND(SUM(realized_pnl), 0) as total_pnl,
+            ROUND(SUM(CASE WHEN is_profit=1 THEN 1 ELSE 0 END)/COUNT(*) * 100, 1) as win_rate,
+            ROUND(AVG(max_profit_pct), 2) as avg_max_prof,
+            ROUND(AVG(hold_days), 1) as avg_hold
+        FROM trade_audit 
+        WHERE profit_capture_grade IS NOT NULL
+        GROUP BY profit_capture_grade
+        ORDER BY avg_pnl DESC
+    """)
+    for r in cur.fetchall():
+        L.append(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]}% | {r[5]} | {r[6]} |")
+    L.append("")
+
+    # 11.2 全回吐交易特征
+    L.append("### 11.2 全回吐交易特征分析")
+    L.append("")
+    L.append("**核心问题**: 280笔交易曾有浮盈(平均9.89%)但最终亏损，总亏48.8万")
+    L.append("")
+    L.append("| 特征维度 | 全回吐 | 非全回吐 | 差异 |")
+    L.append("|----------|--------|----------|------|")
+    cur.execute("""
+        SELECT 
+            'BOLL极端买入率' as dim,
+            ROUND(SUM(CASE WHEN stk_boll_pctb > 90 OR stk_boll_pctb < 10 THEN 1 ELSE 0 END) / COUNT(*) * 100, 1),
+            '—'
+        FROM trade_audit WHERE profit_capture_grade = '利润全回吐'
+    """)
+    blowout_boll = cur.fetchone()
+    cur.execute("""
+        SELECT ROUND(SUM(CASE WHEN stk_boll_pctb > 90 OR stk_boll_pctb < 10 THEN 1 ELSE 0 END) / COUNT(*) * 100, 1)
+        FROM trade_audit WHERE profit_capture_grade != '利润全回吐' AND profit_capture_grade IS NOT NULL
+    """)
+    other_boll = cur.fetchone()[0]
+    L.append(f"| BOLL极端买入率 | {blowout_boll[1]}% | {other_boll}% | {'↑偏高' if float(blowout_boll[1]) > float(other_boll) else '↓偏低'} |")
+
+    cur.execute("SELECT ROUND(AVG(hold_days),1) FROM trade_audit WHERE profit_capture_grade='利润全回吐'")
+    bhd = cur.fetchone()[0]
+    cur.execute("SELECT ROUND(AVG(hold_days),1) FROM trade_audit WHERE profit_capture_grade != '利润全回吐' AND profit_capture_grade IS NOT NULL")
+    ohd = cur.fetchone()[0]
+    L.append(f"| 平均持仓天数 | {bhd} | {ohd} | {'↑偏长' if float(bhd) > float(ohd) else '↓偏短'} |")
+
+    cur.execute("SELECT ROUND(AVG(is_impulsive)*100,1) FROM trade_audit WHERE profit_capture_grade='利润全回吐'")
+    bimp = cur.fetchone()[0]
+    cur.execute("SELECT ROUND(AVG(is_impulsive)*100,1) FROM trade_audit WHERE profit_capture_grade != '利润全回吐' AND profit_capture_grade IS NOT NULL")
+    oimp = cur.fetchone()[0]
+    L.append(f"| 冲动买入率 | {bimp}% | {oimp}% | {'↑偏高' if float(bimp) > float(oimp) else '↓'} |")
+
+    cur.execute("SELECT ROUND(AVG(days_to_max_profit),1) FROM trade_audit WHERE profit_capture_grade='利润全回吐' AND days_to_max_profit IS NOT NULL")
+    bdm = cur.fetchone()[0]
+    L.append(f"| 到达峰值天数 | {bdm} | — | 浮盈后持仓过久 |")
+
+    cur.execute("SELECT ROUND(AVG(profit_decay_rate),2) FROM trade_audit WHERE profit_capture_grade='利润全回吐' AND profit_decay_rate IS NOT NULL")
+    bdecay = cur.fetchone()[0]
+    L.append(f"| 浮盈衰减速度 | {bdecay}%/天 | — | 浮盈蒸发速度 |")
+    L.append("")
+
+    # 11.3 浮盈峰值时间分析
+    L.append("### 11.3 浮盈峰值到达时间 vs 兑现率")
+    L.append("")
+    cur.execute("""
+        SELECT 
+            CASE 
+                WHEN days_to_max_profit = 0 THEN 'Day0(买入日)'
+                WHEN days_to_max_profit <= 2 THEN 'Day1-2'
+                WHEN days_to_max_profit <= 5 THEN 'Day3-5'
+                WHEN days_to_max_profit <= 10 THEN 'Day6-10'
+                ELSE 'Day11+'
+            END as bucket,
+            COUNT(*) as cnt,
+            ROUND(AVG(pnl_rate), 2) as avg_pnl,
+            ROUND(AVG(profit_capture_rate), 3) as avg_pcr
+        FROM trade_audit 
+        WHERE days_to_max_profit IS NOT NULL AND profit_capture_grade IS NOT NULL
+        GROUP BY bucket ORDER BY MIN(days_to_max_profit)
+    """)
+    L.append("| 峰值到达 | 笔数 | avg_pnl% | avg_PCR |")
+    L.append("|----------|------|----------|---------|")
+    for r in cur.fetchall():
+        L.append(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} |")
+    L.append("")
+
+    # ── 十二、情绪周期分析 ──
+    L.append("## 十二、情绪周期分析")
+    L.append("")
+
+    # 12.1 总体分布
+    L.append("### 12.1 情绪阶段与交易表现")
+    L.append("")
+    L.append("| 阶段 | 笔数 | avg_pnl% | 总盈亏 | 胜率 | 冲动率 | avg_PCR |")
+    L.append("|------|------|----------|--------|------|--------|---------|")
+    cur.execute("""
+        SELECT 
+            emotional_phase,
+            COUNT(*) as cnt,
+            ROUND(AVG(pnl_rate), 2) as avg_pnl,
+            ROUND(SUM(realized_pnl), 0) as total_pnl,
+            ROUND(SUM(CASE WHEN is_profit=1 THEN 1 ELSE 0 END)/COUNT(*) * 100, 1) as win_rate,
+            ROUND(AVG(is_impulsive)*100, 1) as impulsive_rate,
+            ROUND(AVG(profit_capture_rate), 3) as avg_pcr
+        FROM trade_audit 
+        WHERE emotional_phase IS NOT NULL
+        GROUP BY emotional_phase
+        ORDER BY avg_pnl DESC
+    """)
+    for r in cur.fetchall():
+        L.append(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]}% | {r[5]}% | {r[6]} |")
+    L.append("")
+
+    # 12.2 tilt_phase深度分析
+    L.append("### 12.2 Tilt Phase（连亏3笔后）——最致命的情绪陷阱")
+    L.append("")
+    cur.execute("""
+        SELECT COUNT(*) FROM trade_audit WHERE emotional_phase='tilt_phase'
+    """)
+    tilt_cnt = cur.fetchone()[0]
+    cur.execute("""
+        SELECT 
+            ROUND(AVG(pnl_rate), 2),
+            ROUND(AVG(stk_boll_pctb), 1),
+            ROUND(AVG(is_impulsive)*100, 1),
+            ROUND(AVG(hold_days), 1),
+            ROUND(SUM(CASE WHEN profit_capture_grade='利润全回吐' THEN 1 ELSE 0 END)/COUNT(*)*100, 1)
+        FROM trade_audit WHERE emotional_phase='tilt_phase'
+    """)
+    tr = cur.fetchone()
+    L.append(f"- **{tilt_cnt}笔** 交易发生在连亏3笔之后")
+    L.append(f"- 平均盈亏: **{tr[0]}%** (远低于neutral的0.19%)")
+    L.append(f"- 入场BOLL%B: **{tr[1]}** (极端位置入场)")
+    L.append(f"- 冲动率: **{tr[2]}%**")
+    L.append(f"- 持仓天数: **{tr[3]}天**")
+    L.append(f"- 利润全回吐率: **{tr[4]}%**")
+    L.append("")
+
+    # 12.3 情绪周期交叉：情绪×浮盈兑现
+    L.append("### 12.3 情绪阶段 × 浮盈兑现等级 交叉分析")
+    L.append("")
+    phases = ['overconfident', 'neutral', 'frustration', 'tilt_phase']
+    grades = ['优秀兑现', '部分兑现', '少量兑现', '利润全回吐', '无意义浮盈']
+    header = "| 情绪阶段 |" + "|".join(grades) + " |"
+    L.append(header)
+    L.append("|" + "|".join(["----------"] * (len(grades)+1)) + "|")
+    for phase in phases:
+        row_parts = [phase]
+        for grade in grades:
+            cur.execute("""
+                SELECT COUNT(*) FROM trade_audit 
+                WHERE emotional_phase=%s AND profit_capture_grade=%s
+            """, (phase, grade))
+            cnt = cur.fetchone()[0]
+            row_parts.append(str(cnt))
+        L.append("| " + " | ".join(row_parts) + " |")
+    L.append("")
+
+    # 12.4 情绪周期年度演变
+    L.append("### 12.4 情绪阶段年度演变")
+    L.append("")
+    L.append("| 年份 | neutral | overconfident | frustration | tilt_phase |")
+    L.append("|------|---------|---------------|-------------|------------|")
+    cur.execute("""
+        SELECT 
+            YEAR(buy_date) as yr,
+            SUM(CASE WHEN emotional_phase='neutral' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN emotional_phase='overconfident' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN emotional_phase='frustration' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN emotional_phase='tilt_phase' THEN 1 ELSE 0 END)
+        FROM trade_audit
+        WHERE buy_date IS NOT NULL
+        GROUP BY yr ORDER BY yr
+    """)
+    for r in cur.fetchall():
+        L.append(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} |")
+    L.append("")
+
+    # ── 十三、同股累计画像 ──
+    L.append("## 十三、同股累计画像")
+    L.append("")
+
+    # 13.1 高频亏损股（"感情股"）
+    L.append('### 13.1 高频亏损股 TOP15（"感情股"）')
+    L.append("")
+    L.append("| 代码 | 名称 | 笔数 | 总盈亏 | avg_pnl% | 胜率 | avg_PCR | avg持仓 |")
+    L.append("|------|------|------|--------|----------|------|---------|---------|")
+    cur.execute("""
+        SELECT 
+            stock_code, stock_name,
+            COUNT(*) as trade_cnt,
+            ROUND(SUM(realized_pnl), 0) as total_pnl,
+            ROUND(AVG(pnl_rate), 2) as avg_pnl,
+            ROUND(SUM(CASE WHEN is_profit=1 THEN 1 ELSE 0 END)/COUNT(*) * 100, 1) as win_rate,
+            ROUND(AVG(profit_capture_rate), 3) as avg_pcr,
+            ROUND(AVG(hold_days), 1) as avg_hold
+        FROM trade_audit 
+        GROUP BY stock_code, stock_name
+        HAVING trade_cnt >= 5
+        ORDER BY total_pnl ASC
+        LIMIT 15
+    """)
+    for r in cur.fetchall():
+        L.append(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} | {r[5]}% | {r[6]} | {r[7]} |")
+    L.append("")
+
+    # 13.2 高频盈利股
+    L.append("### 13.2 高频盈利股 TOP10")
+    L.append("")
+    L.append("| 代码 | 名称 | 笔数 | 总盈亏 | avg_pnl% | 胜率 |")
+    L.append("|------|------|------|--------|----------|------|")
+    cur.execute("""
+        SELECT 
+            stock_code, stock_name,
+            COUNT(*) as trade_cnt,
+            ROUND(SUM(realized_pnl), 0) as total_pnl,
+            ROUND(AVG(pnl_rate), 2) as avg_pnl,
+            ROUND(SUM(CASE WHEN is_profit=1 THEN 1 ELSE 0 END)/COUNT(*) * 100, 1) as win_rate
+        FROM trade_audit 
+        GROUP BY stock_code, stock_name
+        HAVING trade_cnt >= 3
+        ORDER BY total_pnl DESC
+        LIMIT 10
+    """)
+    for r in cur.fetchall():
+        L.append(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} | {r[5]}% |")
+    L.append("")
+
+    # 13.3 第1笔 vs 后续笔胜率
+    L.append("### 13.3 同股交易序号 vs 胜率变化（是否越做越差）")
+    L.append("")
+    L.append("| 第N笔 | 笔数 | avg_pnl% | 胜率 |")
+    L.append("|--------|------|----------|------|")
+    cur.execute("""
+        SELECT 
+            trade_seq,
+            COUNT(*) as cnt,
+            ROUND(AVG(pnl_rate), 2) as avg_pnl,
+            ROUND(SUM(CASE WHEN is_profit=1 THEN 1 ELSE 0 END)/COUNT(*) * 100, 1) as win_rate
+        FROM (
+            SELECT 
+                t.*,
+                ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY buy_date, id) as trade_seq
+            FROM trade_audit t
+            WHERE buy_date IS NOT NULL
+        ) ranked
+        WHERE trade_seq <= 10
+        GROUP BY trade_seq ORDER BY trade_seq
+    """)
+    for r in cur.fetchall():
+        L.append(f"| 第{r[0]}笔 | {r[1]} | {r[2]} | {r[3]}% |")
+    L.append("")
+
+    # 13.4 典型"越做越亏"模式
+    L.append('### 13.4 典型"越做越亏"模式识别')
+    L.append("")
+    L.append("条件: 同股>=5笔, 前半胜率>后半胜率, 总亏损")
+    L.append("")
+    L.append("| 代码 | 名称 | 笔数 | 前半胜率 | 后半胜率 | 差值 | 总亏损 |")
+    L.append("|------|------|------|----------|----------|------|--------|")
+    # 使用临时表简化
+    cur.execute("DROP TEMPORARY TABLE IF EXISTS _tmp_ranked")
+    cur.execute("""
+        CREATE TEMPORARY TABLE _tmp_ranked AS
+        SELECT 
+            id, stock_code, stock_name, buy_date, pnl_rate, realized_pnl, is_profit,
+            ROW_NUMBER() OVER (PARTITION BY stock_code ORDER BY buy_date, id) as trade_seq,
+            COUNT(*) OVER (PARTITION BY stock_code) as total_cnt
+        FROM trade_audit
+        WHERE buy_date IS NOT NULL
+    """)
+    cur.execute("""
+        SELECT 
+            stock_code, stock_name,
+            total_cnt,
+            ROUND(SUM(CASE WHEN trade_seq <= total_cnt/2 AND is_profit=1 THEN 1 ELSE 0 END) / 
+                NULLIF(SUM(CASE WHEN trade_seq <= total_cnt/2 THEN 1 ELSE 0 END), 0) * 100, 1) as first_half_wr,
+            ROUND(SUM(CASE WHEN trade_seq > total_cnt/2 AND is_profit=1 THEN 1 ELSE 0 END) / 
+                NULLIF(SUM(CASE WHEN trade_seq > total_cnt/2 THEN 1 ELSE 0 END), 0) * 100, 1) as second_half_wr,
+            ROUND(SUM(realized_pnl), 0) as total_pnl
+        FROM _tmp_ranked
+        GROUP BY stock_code, stock_name, total_cnt
+        HAVING total_cnt >= 5 AND total_pnl < 0 AND first_half_wr > second_half_wr
+        ORDER BY total_pnl ASC
+        LIMIT 10
+    """)
+    for r in cur.fetchall():
+        diff = float(r[3] or 0) - float(r[4] or 0)
+        L.append(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]}% | {r[4]}% | {diff:+.1f}% | {r[5]} |")
+    cur.execute("DROP TEMPORARY TABLE IF EXISTS _tmp_ranked")
+    L.append("")
+
+    # ── 十四、交叉发现 ──
+    L.append("## 十四、V5 交叉发现")
+    L.append("")
+
+    # 14.1 情绪周期中的浮盈全回吐
+    L.append("### 14.1 情绪×浮盈全回吐 × BOLL极端 三重交叉")
+    L.append("")
+    cur.execute("""
+        SELECT 
+            emotional_phase,
+            COUNT(*) as cnt,
+            ROUND(SUM(CASE WHEN profit_capture_grade='利润全回吐' THEN 1 ELSE 0 END)/COUNT(*)*100, 1) as blowout_rate,
+            ROUND(SUM(CASE WHEN stk_boll_pctb>90 OR stk_boll_pctb<10 THEN 1 ELSE 0 END)/COUNT(*)*100, 1) as boll_extreme_rate
+        FROM trade_audit
+        WHERE emotional_phase IS NOT NULL
+        GROUP BY emotional_phase ORDER BY SUM(realized_pnl) DESC
+    """)
+    L.append("| 情绪阶段 | 笔数 | 全回吐率 | BOLL极端率 |")
+    L.append("|----------|------|----------|------------|")
+    for r in cur.fetchall():
+        L.append(f"| {r[0]} | {r[1]} | {r[2]}% | {r[3]}% |")
+    L.append("")
+
+    # 14.2 星期几效应
+    L.append("### 14.2 买入星期几效应")
+    L.append("")
+    weekday_names = {1:'周一', 2:'周二', 3:'周三', 4:'周四', 5:'周五'}
+    L.append("| 星期 | 笔数 | avg_pnl% | 胜率 | 冲动率 | tilt率 |")
+    L.append("|------|------|----------|------|--------|--------|")
+    cur.execute("""
+        SELECT 
+            buy_weekday,
+            COUNT(*) as cnt,
+            ROUND(AVG(pnl_rate), 2) as avg_pnl,
+            ROUND(SUM(CASE WHEN is_profit=1 THEN 1 ELSE 0 END)/COUNT(*) * 100, 1) as win_rate,
+            ROUND(AVG(is_impulsive)*100, 1) as impulsive_rate,
+            ROUND(SUM(CASE WHEN emotional_phase='tilt_phase' THEN 1 ELSE 0 END)/COUNT(*)*100, 1) as tilt_rate
+        FROM trade_audit
+        WHERE buy_weekday IS NOT NULL
+        GROUP BY buy_weekday ORDER BY buy_weekday
+    """)
+    for r in cur.fetchall():
+        wd = weekday_names.get(r[0], str(r[0]))
+        L.append(f"| {wd} | {r[1]} | {r[2]} | {r[3]}% | {r[4]}% | {r[5]}% |")
+    L.append("")
+
+    # 14.3 大盘环境与浮盈兑现
+    L.append("### 14.3 大盘MA20环境与浮盈兑现")
+    L.append("")
+    cur.execute("""
+        SELECT 
+            CASE 
+                WHEN mkt_above_ma20 >= 0.7 THEN '强势(>70%天在MA20上)'
+                WHEN mkt_above_ma20 >= 0.3 THEN '中性(30-70%)'
+                ELSE '弱势(<30%)'
+            END as mkt_env,
+            COUNT(*) as cnt,
+            ROUND(AVG(pnl_rate), 2) as avg_pnl,
+            ROUND(SUM(CASE WHEN is_profit=1 THEN 1 ELSE 0 END)/COUNT(*) * 100, 1) as win_rate,
+            ROUND(AVG(profit_capture_rate), 3) as avg_pcr
+        FROM trade_audit
+        WHERE mkt_above_ma20 IS NOT NULL
+        GROUP BY mkt_env ORDER BY avg_pnl DESC
+    """)
+    L.append("| 大盘环境 | 笔数 | avg_pnl% | 胜率 | avg_PCR |")
+    L.append("|----------|------|----------|------|---------|")
+    for r in cur.fetchall():
+        L.append(f"| {r[0]} | {r[1]} | {r[2]} | {r[3]}% | {r[4]} |")
+    L.append("")
+
+    L.append("---")
+    L.append(f"*报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M')}*")
+    L.append(f"*数据来源: trade_audit表 ({total_cnt}笔交易), tdx_data.day_kline (日线K线)*")
+    L.append("")
+
     conn.close()
 
     # ── 输出 ──
