@@ -380,51 +380,60 @@ v4_scoring:
         cooldown_days: 3
         reason: "连亏后冲动交易占比高"
 
-  # V5 规则引擎 (基于深度归因发现的模式)
+  # V5 规则引擎 (基于深度归因+验证集测试)
+  # 验证方法: 训练集(2025前366笔) vs 验证集(2026Q1+Q2 713笔)
+  # 综合阈值: 触发>=2条规则→减仓, >=3条→禁止
   v5_rules:
-    # 情绪预警
+    composite_threshold:
+      reduce_position: 2       # 触发2条规则→减仓(胜率38.5%)
+      block_entry: 3           # 触发3条规则→禁止(胜率30.9%)
+
+    # ---- 有效规则(验证集通过) ----
     emotional:
       - name: "tilt预警(连亏2笔)"
         condition: "consecutive_losses >= 2"
         action: "warning"
         level: "yellow"
-        reason: "连亏2笔后avg_pnl=-1.51%/胜率34.1%, 边际恶化最大"
+        weight: 1
+        reason: "验证集: avg_pnl=-0.97%/胜率35.7%, Δ=-1.28% vs基线"
       - name: "tilt强制冷却(连亏3笔)"
         condition: "consecutive_losses >= 3"
         action: "force_cooldown"
         cooldown_days: 3
-        reason: "连亏3笔后avg_pnl=-1.94%/胜率30.5%/全回吐率32.9%"
+        weight: 2
+        reason: "验证集: avg_pnl=-1.35%/胜率32.1%, Δ=-1.66% vs基线"
       - name: "连亏5笔禁止交易"
         condition: "consecutive_losses >= 5"
         action: "block_entry"
         cooldown_days: 7
+        weight: 2
         reason: "连亏5笔后恶化趋平但仍亏损，需强制休息"
 
-    # 浮盈管理
-    profit_capture:
-      - name: "浮盈5%启动跟踪止盈"
-        condition: "max_profit_pct >= 5 AND profit_capture_rate < 0.3"
-        action: "trailing_stop"
-        trailing_percent: 3
-        reason: "浮盈>=5%时PCR=0.167为正，5%是浮盈有意义分界线"
-      - name: "浮盈8%收紧止盈"
-        condition: "max_profit_pct >= 8 AND profit_capture_rate < 0.5"
-        action: "tight_trailing_stop"
-        trailing_percent: 2
-        reason: "浮盈>=8%时胜率77.2%/PCR=0.358，必须保护"
-      - name: "Day0峰值自动减仓"
-        condition: "days_to_max_profit = 0 AND stk_boll_pctb > 50"
-        action: "reduce_position"
-        max_position: 0.5
-        reason: "Day0峰值500笔胜率仅17.8%，BOLL>50追高确认"
+    # ---- 最有效规则(验证集Δpnl最小) ----
+    entry_boll:
+      - name: "BOLL>50+Day0峰值禁止"
+        condition: "stk_boll_pctb > 50 AND days_to_max_profit = 0"
+        action: "block_entry"
+        weight: 2
+        reason: "验证集: avg_pnl=-4.17%/胜率14.4%, 过拟合Δ=0.05%最稳定"
+        sample_size: "训练55笔+验证202笔"
 
-    # 感情股管控
+    # ---- 浮盈管理(降级为信息提示) ----
+    profit_capture:
+      - name: "浮盈5%提醒止盈"
+        condition: "max_profit_pct >= 5"
+        action: "info"
+        weight: 0
+        reason: "验证集未通过(Δ+0.50% vs基线), 仅作信息提示"
+
+    # ---- 感情股管控 ----
     emotional_stocks:
       - name: "感情股预警"
-        condition: "same_stock_trades >= 5 AND same_stock_pnl < -3000"
+        condition: "same_stock_trades >= 5 AND same_stock_pnl_pct < -5"
         action: "warning"
         level: "red"
-        reason: "同股>=5笔亏损>3000元, 14只感情股总亏32.7万"
+        loss_threshold_pct: 5              # 相对账户规模的5%（替代固定3000元）
+        reason: "同股>=5笔且亏损占账户5%以上, 14只感情股总亏32.7万"
       - name: "越做越亏阻断"
         condition: "same_stock_trades >= 5 AND same_stock_pnl < 0 AND same_stock_wr_declining = true"
         action: "block_entry"
@@ -441,23 +450,17 @@ v4_scoring:
             name: "润建股份"
             reason: "12笔亏4.2万, 前半33%->后半17%"
 
-    # 时段规则
-    timing:
-      - name: "周四谨慎"
+    # ---- 无效规则(降级为监控) ----
+    timing_monitor:
+      - name: "周四监控"
         condition: "buy_weekday = 4"
-        action: "reduce_position"
-        max_position: 0.5
-        reason: "周四冲动率91.5%为全周最高"
-      - name: "周一回避"
-        condition: "buy_weekday = 1"
-        action: "warning"
-        level: "yellow"
-        reason: "周一avg_pnl=-0.85%为全周最差"
+        action: "monitor"
+        weight: 0
+        reason: "验证集未通过(Δ+0.49%), 降级为监控"
 
-    # 大盘环境
-    market_env:
-      - name: "弱势环境减仓"
+    market_env_monitor:
+      - name: "弱势大盘监控"
         condition: "mkt_above_ma20 < 0.3"
-        action: "reduce_position"
-        max_position: 0.5
-        reason: "弱势(<30%天在MA20上)PCR=-3.027, 浮盈全回吐"
+        action: "monitor"
+        weight: 0
+        reason: "验证集弱有效(Δ-0.38%), 降级为监控"
