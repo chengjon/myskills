@@ -36,7 +36,7 @@ MYSQL_DB = 'hermes'
 # 账户识别关键词
 ACCOUNT_MAP = {
     '平安两融': ['两融', '平安两融', '融资融券', '302199966809'],
-    '平安普通': ['平安普通', '普通账户', '302119114015'],
+    '平安普通': ['平安普通', '普通账户', '普通', '302119114015'],
     '国金QMT': ['QMT', '国金', '国金QMT', '8886873933'],
 }
 
@@ -93,6 +93,14 @@ def archive_images(content, trade_date):
     lines = content.split('\n')
     current_account = '未分类'
     archived = []
+    seen_sources = set()  # 去重：已处理的源文件名
+
+    # 先收集pic/下已有的归档，避免重复
+    existing_archives = set()
+    if os.path.isdir(PIC_DIR):
+        for f in os.listdir(PIC_DIR):
+            if f.endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                existing_archives.add(f)
 
     for line in lines:
         line_stripped = line.strip()
@@ -109,9 +117,28 @@ def archive_images(content, trade_date):
         # 提取图片引用 ![[xxx.png]] 或 ![[xxx.png|695]]
         imgs = re.findall(r'!\[\[([^\]|]+\.(?:png|jpg|jpeg|gif))', line_stripped)
         for img_name in imgs:
+            # 去重：同源文件只归档一次
+            if img_name in seen_sources:
+                archived.append(f'  [DUP] {img_name} (重复，跳过)')
+                continue
+            seen_sources.add(img_name)
+
             src = find_attachment(img_name)
             if not src:
                 archived.append(f'  [MISS] {img_name} (附件未找到)')
+                continue
+
+            # 检查pic/下是否已有该源文件的归档（文件内容相同）
+            src_size = os.path.getsize(src)
+            already_archived = False
+            for existing in existing_archives:
+                if existing.startswith(date_str + '_'):
+                    ep = os.path.join(PIC_DIR, existing)
+                    if os.path.getsize(ep) == src_size:
+                        already_archived = True
+                        archived.append(f'  [SKIP] {img_name} (已有归档: {existing})')
+                        break
+            if already_archived:
                 continue
 
             # 目标文件名: YYYYMMDD_账户名.ext
