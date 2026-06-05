@@ -11,7 +11,7 @@
   - 分时趋势: 买入前5根K线方向判定
   - 成交量比: 当前K线量/前5根均量
 
-数据源: 新浪15分K线 (最多5000条, 回溯约16个月)
+数据源: TDX Client 15分K线 (通过NAS Docker API, 数据完整)
 覆盖率: 87% (2025-02-19之后的939/1079笔)
 
 依赖: pymysql, pyyaml, numpy
@@ -31,6 +31,7 @@ import yaml
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _TRADE_AUDIT_DIR = os.path.dirname(_SCRIPT_DIR)
 _CONFIG_PATH = os.path.join(_TRADE_AUDIT_DIR, "config", "review_config.yaml")
+sys.path.insert(0, _SCRIPT_DIR)
 
 # ── MySQL ──
 
@@ -157,35 +158,33 @@ def _save_kline_to_db(code: str, klines: List[Dict], conn=None) -> int:
             conn.close()
 
 
-def _fetch_kline_from_api(code: str, count: int = 5000) -> List[Dict]:
+def _fetch_kline_from_tdx(code: str) -> List[Dict]:
     """
-    从新浪API获取15分钟K线数据(无缓存)
-    count: 最大5000条(约16个月)
-    返回: [{date, open, high, low, close, volume}, ...] 按时间正序
+    通过TDX Client获取15分钟K线数据
+    返回: [{date, day, open, high, low, close, volume}, ...] 按时间正序
     """
-    import urllib.request
-    import json as _json
+    from tdx_client import TDXClient
+    tdx = TDXClient()
+    tdx_code = TDXClient.code_to_tdx(code)
 
-    market = "sz" if code.startswith(("0", "1", "2", "3")) else "sh"
-    symbol = f"{market}{code}"
-    url = (
-        f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php"
-        f"/CN_MarketData.getKLineData?symbol={symbol}&scale=15&ma=no&datalen={count}"
-    )
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            raw = resp.read().decode()
-            data = _json.loads(raw)
+        raw = tdx.kline_15m(tdx_code)
     except Exception as e:
-        print(f"  [WARN] {code} 15分K线API获取失败: {e}")
+        print(f"  [WARN] {code} TDX 15分K线获取失败: {e}")
+        return []
+
+    if not raw:
         return []
 
     result = []
-    for item in data:
+    for item in raw:
+        t = item.get("time", "")
+        # TDXClient返回time字段, 取前10位作为day字段
+        day = t[:10] if len(t) >= 10 else ""
         try:
             result.append({
-                "date": item.get("day", ""),
+                "date": t,
+                "day": day,
                 "open": float(item.get("open", 0)),
                 "high": float(item.get("high", 0)),
                 "low": float(item.get("low", 0)),
@@ -197,109 +196,48 @@ def _fetch_kline_from_api(code: str, count: int = 5000) -> List[Dict]:
     return result
 
 
+# DEPRECATED: 保留旧函数签名以防外部调用, 内部已不使用
 def _fetch_kline_from_pytdx(code: str, start_date: str, end_date: str) -> List[Dict]:
-    """
-    通过Windows Python + pytdx获取15分钟K线(补充新浪无法覆盖的早期数据)
-    返回: [{date, open, high, low, close, volume}, ...] 按时间正序
-    """
-    # 延迟导入，避免在不需要pytdx时报错
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from pytdx_kline_adapter import fetch_15min_kline_pytdx
-
-    raw = fetch_15min_kline_pytdx(code, start_date=start_date, end_date=end_date)
-    if not raw:
-        return []
-
-    # 转换格式: pytdx的datetime → date
-    result = []
-    for bar in raw:
-        dt = bar.get("datetime", "")
-        # pytdx格式: "2024-10-10 09:45" → 统一为 "2024-10-10 09:45:00"
-        if len(dt) == 16:
-            dt += ":00"
-        result.append({
-            "date": dt,
-            "open": float(bar.get("open", 0)),
-            "high": float(bar.get("high", 0)),
-            "low": float(bar.get("low", 0)),
-            "close": float(bar.get("close", 0)),
-            "volume": float(bar.get("volume", 0)),
-        })
-    return result
+    """[DEPRECATED] 已由TDXClient替代, 返回空列表"""
+    return []
 
 
-def fetch_15min_kline(code: str, count: int = 5000, force_refresh: bool = False,
-                       pytdx_start: str = "", pytdx_end: str = "") -> List[Dict]:
+def fetch_15min_kline(code: str, force_refresh: bool = False) -> List[Dict]:
     """
     获取15分钟K线数据(带MySQL缓存)
 
     流程:
       1. 查 kline_15min 表 → 有数据且非force → 直接返回
-      2. 调新浪API → 写入 kline_15min → 返回
-      3. 若需补充早期数据(新浪无法覆盖), 调pytdx → 合并+写入缓存
+      2. 调TDX Client API → 写入 kline_15min → 返回
 
     Args:
-        code: 股票代码
-        count: API拉取条数(仅API调用时生效)
+        code: 股票代码(6位纯数字)
         force_refresh: 强制从API重新拉取并覆盖缓存
-        pytdx_start: pytdx补充起始日期(如"2024-05-01")
-        pytdx_end: pytdx补充结束日期(如"2025-02-18")
     """
     # Step 1: 查缓存
     if not force_refresh:
         cached = _load_kline_from_db(code)
         if cached:
-            # 检查缓存是否覆盖了pytdx_start的需求
-            if not pytdx_start or (cached and cached[0]["date"][:10] <= pytdx_start):
-                return cached
+            return cached
 
-    # Step 2: 调新浪API
-    klines = _fetch_kline_from_api(code, count)
-    
-    # Step 3: 若需补充早期数据, 调pytdx
-    pytdx_klines = []
-    if pytdx_start and pytdx_end:
-        print(f"  [{code}] pytdx补充 {pytdx_start}~{pytdx_end}...", end=" ", flush=True)
-        pytdx_klines = _fetch_kline_from_pytdx(code, pytdx_start, pytdx_end)
-        print(f"{len(pytdx_klines)}条", flush=True)
+    # Step 2: 调TDX Client
+    klines = _fetch_kline_from_tdx(code)
 
-    # Step 4: 合并数据(去重, 按时间正序)
-    merged = _merge_klines(klines, pytdx_klines)
-    
-    if not merged:
-        # 两边都失败时，再试一次缓存(可能之前有旧数据)
+    if not klines:
+        # API失败时，再试一次缓存(可能之前有旧数据)
         if not force_refresh:
             return _load_kline_from_db(code)
         return []
 
-    # Step 5: 写入缓存
-    inserted = _save_kline_to_db(code, merged)
+    # Step 3: 写入缓存
+    inserted = _save_kline_to_db(code, klines)
     if inserted:
-        print(f"  [{code}] 缓存写入{inserted}条(新浪{len(klines)}+pytdx{len(pytdx_klines)})", 
-              end=" ", flush=True)
+        print(f"  [{code}] 缓存写入{inserted}条(TDX)", end=" ", flush=True)
 
-    return merged
+    return klines
 
 
-def _merge_klines(sina_klines: List[Dict], pytdx_klines: List[Dict]) -> List[Dict]:
-    """合并新浪和pytdx的K线数据, 去重, 按时间正序"""
-    if not pytdx_klines:
-        return sina_klines
-    if not sina_klines:
-        return pytdx_klines
-    
-    # 用datetime去重
-    seen = set()
-    merged = []
-    for k in sina_klines + pytdx_klines:
-        dt = k["date"][:16]  # 取到分钟级
-        if dt not in seen:
-            seen.add(dt)
-            merged.append(k)
-    
-    # 按时间排序
-    merged.sort(key=lambda x: x["date"])
-    return merged
+# DEPRECATED: _merge_klines 不再需要(TDX Client数据源单一, 无需合并)
 
 
 # ── 15分钟BOLL计算 ──
@@ -592,8 +530,6 @@ def batch_analyze(
     min_date: str = "2025-02-19",
     dry_run: bool = False,
     force_refresh: bool = False,
-    pytdx_start: str = "",
-    pytdx_end: str = "",
 ) -> Dict:
     """
     批量分析15分K线买卖位置
@@ -603,8 +539,6 @@ def batch_analyze(
         min_date: 最早可分析日期(15分K线数据覆盖范围)
         dry_run: 只统计不写入
         force_refresh: 强制从API重新拉取K线(忽略DB缓存)
-        pytdx_start: pytdx补充起始日期(如"2024-05-01"), 新浪无法覆盖的早期数据
-        pytdx_end: pytdx补充结束日期(如"2025-02-18")
     """
     import pymysql
 
@@ -645,8 +579,7 @@ def batch_analyze(
 
     for stock_code, stock_trades in by_stock.items():
         print(f"  [{stock_code}] 拉取15分K线...", end=" ", flush=True)
-        klines = fetch_15min_kline(stock_code, count=5000, force_refresh=force_refresh,
-                                    pytdx_start=pytdx_start, pytdx_end=pytdx_end)
+        klines = fetch_15min_kline(stock_code, force_refresh=force_refresh)
         print(f"{len(klines)}条", flush=True)
 
         if not klines:
@@ -963,7 +896,7 @@ tags: [复盘, 15分钟, 买卖位置, BOLL-15m]
 - 本报告基于15分钟K线自动分析，买卖时间为价格匹配推算，非精确成交时间
 - 匹配方法: exact(价格在K线范围内) / boundary(<1%误差) / failed(无法匹配)
 - Wilson CI 为 95% 置信区间
-- 数据来源: 新浪15分K线 + trade_audit (MySQL)
+- 数据来源: TDX Client 15分K线 + trade_audit (MySQL)
 """)
 
     return "\n".join(lines)
@@ -990,15 +923,12 @@ if __name__ == "__main__":
     parser.add_argument("--min-date", default="2025-02-19", help="最早可分析日期")
     parser.add_argument("--report-only", action="store_true", help="只生成报告(不跑分析)")
     parser.add_argument("--refresh-cache", action="store_true", help="强制从API重新拉取K线并更新缓存")
-    parser.add_argument("--pytdx-start", default="", help="pytdx补充起始日期(如2024-05-01)")
-    parser.add_argument("--pytdx-end", default="", help="pytdx补充结束日期(如2025-02-18)")
     args = parser.parse_args()
 
     if not args.report_only:
         stats = batch_analyze(
             force=args.force, min_date=args.min_date,
             dry_run=args.dry_run, force_refresh=args.refresh_cache,
-            pytdx_start=args.pytdx_start, pytdx_end=args.pytdx_end,
         )
         print(f"\n统计: {stats}")
 

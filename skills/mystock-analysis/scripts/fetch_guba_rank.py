@@ -4,8 +4,8 @@
 
 Steps:
 1. Playwright抓取人气榜+飙升榜排名数据(各翻5页=100条)
-2. 腾讯行情API补全名称+价格
-3. 新浪/腾讯K线API计算MA5/MA20(线程池8并发)
+2. TDX API补全名称+价格(batch_quote + search)
+3. TDX K线API计算MA5/MA20(线程池8并发)
 4. 筛选股价>MA5且>MA20的股票
 5. 写Obsidian 3个文件(人气榜.md, 飙升榜.md, index.md)
 6. 写MySQL 3张表(guba_popular_rank, guba_surge_rank, guba_index_picks)
@@ -16,13 +16,18 @@ import sys
 import re
 import json
 import time
-import urllib.request
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 
 import pymysql
 import numpy as np
+
+# 加载 TDXClient
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'trade-audit', 'scripts'))
+from tdx_client import TDXClient
+
+_tdx = TDXClient()
 
 # ============================================================
 # 配置
@@ -193,107 +198,65 @@ def fetch_rank_data(rank_type="popular"):
 
 
 # ============================================================
-# Step 2: 腾讯行情API补全名称+价格
+# Step 2: TDX API补全名称+价格
 # ============================================================
-def fetch_tencent_quote(codes):
-    """批量获取腾讯行情数据"""
-    result = {}
-    batch_size = 40
-    for i in range(0, len(codes), batch_size):
-        batch = codes[i:i + batch_size]
-        query_codes = []
-        for c in batch:
-            if c.startswith(('6', '5')):
-                query_codes.append(f"sh{c}")
-            else:
-                query_codes.append(f"sz{c}")
+def fetch_tdx_quote(codes):
+    """批量获取TDX行情数据(名称+价格)"""
+    # Step 1: batch_quote for prices + change_pct
+    quotes = _tdx.batch_quote(codes)  # auto-converts 6-digit to TDX format
+    print(f"  batch_quote返回{len(quotes)}只行情")
 
-        url = f"https://qt.gtimg.cn/q={','.join(query_codes)}"
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://finance.qq.com/"
-        })
+    # Step 2: get names via search (threaded for speed)
+    name_map = {}
+
+    def _get_name(code):
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                body = resp.read().decode("gbk")
-        except Exception as e:
-            print(f"  ⚠ 腾讯行情API请求失败: {e}")
-            continue
+            results = _tdx.search(code)
+            for r in results:
+                rcode = str(r.get('Code', r.get('code', '')))
+                rname = r.get('Name', r.get('name', ''))
+                # Normalize to 6-digit
+                if len(rcode) == 8:
+                    rcode = rcode[2:]
+                if rcode == code and rname:
+                    return code, rname
+            return code, ''
+        except Exception:
+            return code, ''
 
-        for line in body.split(";"):
-            line = line.strip()
-            if not line or '~' not in line:
-                continue
-            try:
-                parts = line.split('~')
-                if len(parts) < 45:
-                    continue
-                m = re.match(r'v_(sh|sz)(\d+)', line)
-                if not m:
-                    continue
-                code = m.group(2)
-                name = parts[1]
-                price = float(parts[3]) if parts[3] else 0.0
-                prev_close = float(parts[4]) if parts[4] else 0.0
-                change_pct = round((price - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0.0
-                result[code] = {
-                    "name": name,
-                    "price": price,
-                    "change_pct": change_pct,
-                }
-            except (ValueError, IndexError):
-                continue
+    with ThreadPoolExecutor(max_workers=KLINE_WORKERS) as executor:
+        for code, name in executor.map(_get_name, codes):
+            if name:
+                name_map[code] = name
+    print(f"  search获取{len(name_map)}只名称")
+
+    # Step 3: build result in original format {code: {name, price, change_pct}}
+    result = {}
+    for c in codes:
+        q = quotes.get(c, {})
+        result[c] = {
+            "name": name_map.get(c, ''),
+            "price": q.get("price", 0),
+            "change_pct": round(q.get("change_pct", 0) or 0, 2),
+        }
 
     return result
 
 
 # ============================================================
-# Step 3: K线API计算MA5/MA20
+# Step 3: TDX K线API计算MA5/MA20
 # ============================================================
 def fetch_kline(code):
-    """获取日K线数据，计算MA5和MA20"""
-    prefix = "sh" if code.startswith(('6', '5')) else "sz"
-    full_code = f"{prefix}{code}"
-
-    # Try Tencent K-line API first
+    """获取TDX日K线数据，计算MA5和MA20"""
     try:
-        tencent_url = (
-            f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?"
-            f"param={full_code},day,,,30,qfq"
-        )
-        with urllib.request.urlopen(tencent_url, timeout=15) as resp:
-            body = json.loads(resp.read().decode())
-        kdata = body.get("data", {}).get(full_code, {})
-        day_key = "qfqday" if "qfqday" in kdata else "day"
-        klines = kdata.get(day_key, [])
+        klines = _tdx.kline_day(code, count=30)
         if klines and len(klines) >= 20:
-            closes = np.array([float(k[2]) for k in klines])
+            closes = np.array([float(k['close']) for k in klines])
             ma5 = float(np.mean(closes[-5:]))
             ma20 = float(np.mean(closes[-20:]))
             return {"code": code, "ma5": ma5, "ma20": ma20}
     except Exception:
         pass
-
-    # Fallback to Sina K-line API
-    try:
-        url = (
-            f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-            f"CN_MarketData.getKLineData?symbol={full_code}&scale=240&ma=no&datalen=30"
-        )
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://finance.sina.com.cn"
-        })
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode())
-        if data and len(data) >= 20:
-            closes = np.array([float(k["close"]) for k in data])
-            ma5 = float(np.mean(closes[-5:]))
-            ma20 = float(np.mean(closes[-20:]))
-            return {"code": code, "ma5": ma5, "ma20": ma20}
-    except Exception:
-        pass
-
     return None
 
 
@@ -578,21 +541,21 @@ def main():
     surge_data = fetch_rank_data("surge")
     print(f"  飙升榜: {len(surge_data)}条")
 
-    # Step 2: 腾讯行情API补全
-    print("\n📈 Step 2: 腾讯行情API补全名称+价格...")
+    # Step 2: TDX API补全
+    print("\n📈 Step 2: TDX API补全名称+价格...")
     all_codes = list(set(
         [item["code"] for item in popular_data] +
         [item["code"] for item in surge_data]
     ))
     print(f"  去重后共{len(all_codes)}只股票")
-    tencent_data = fetch_tencent_quote(all_codes)
-    print(f"  获取到{len(tencent_data)}只行情数据")
+    tdx_data = fetch_tdx_quote(all_codes)
+    print(f"  获取到{len(tdx_data)}只行情数据")
 
-    # Merge tencent data
+    # Merge TDX data
     for item in popular_data + surge_data:
         code = item["code"]
-        if code in tencent_data:
-            td = tencent_data[code]
+        if code in tdx_data:
+            td = tdx_data[code]
             if td["name"]:
                 item["name"] = td["name"]
             if td["price"] and td["price"] > 0:
@@ -605,7 +568,7 @@ def main():
     print(f"  飙升榜有价格: {surge_with_price}/{len(surge_data)}")
 
     # Step 3: K线MA计算
-    print("\n📉 Step 3: K线API计算MA5/MA20...")
+    print("\n📉 Step 3: TDX K线API计算MA5/MA20...")
     codes_with_price = list(set(
         [item["code"] for item in popular_data if item.get("price")] +
         [item["code"] for item in surge_data if item.get("price")]

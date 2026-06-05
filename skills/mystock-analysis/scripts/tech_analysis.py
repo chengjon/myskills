@@ -12,36 +12,47 @@
 依赖: numpy, pandas (pip install numpy pandas)
 """
 
-import json
-import urllib.request
+import os
+import sys
 import numpy as np
+
+# 加载 TDXClient
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'trade-audit', 'scripts'))
+from tdx_client import TDXClient
+
+_tdx = TDXClient()
 
 
 def fetch_realtime(code: str) -> dict:
-    """获取新浪实时行情。code: sz000938 / sh600000"""
-    url = f"http://hq.sinajs.cn/list={code}"
-    req = urllib.request.Request(url, headers={"Referer": "http://finance.sina.com.cn"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        body = resp.read().decode("gbk")
-    raw = body.split('"')[1].split(",")
+    """获取实时行情（TDX）。code: sz000938 / sh600000 / 6位纯数字"""
+    q = _tdx.quote(code)
+    if q is None:
+        return None
+    price = q['price']
+    prev_close = q['prev_close']
     return {
-        "name": raw[0], "open": float(raw[1]), "prev_close": float(raw[2]),
-        "price": float(raw[3]), "high": float(raw[4]), "low": float(raw[5]),
-        "volume": int(raw[8]), "amount": float(raw[9]),
-        "date": raw[30], "time": raw[31],
-        "change": round(float(raw[3]) - float(raw[2]), 2),
-        "change_pct": round((float(raw[3]) - float(raw[2])) / float(raw[2]) * 100, 2),
+        "name": q.get('code', ''),
+        "open": q['open'], "prev_close": prev_close,
+        "price": price, "high": q['high'], "low": q['low'],
+        "volume": q['volume'], "amount": q.get('amount', 0),
+        "date": "", "time": "",
+        "change": round(price - prev_close, 2),
+        "change_pct": round(q.get('change_pct', 0) or 0, 2),
     }
 
 
 def fetch_klines(code: str, days: int = 120) -> list:
-    """获取新浪日K线。code: sz000938 / sh600000"""
-    url = (
-        f"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-        f"CN_MarketData.getKLineData?symbol={code}&scale=240&ma=no&datalen={days}"
-    )
-    with urllib.request.urlopen(url, timeout=15) as resp:
-        return json.loads(resp.read().decode())
+    """获取日K线（TDX）。code: sz000938 / sh600000 / 6位纯数字"""
+    rows = _tdx.kline_day(code, count=days)
+    result = []
+    for r in rows:
+        result.append({
+            "day": str(r['time'])[:10],
+            "open": r['open'], "high": r['high'],
+            "low": r['low'], "close": r['close'],
+            "volume": r['volume'],
+        })
+    return result
 
 
 def _sma(arr, n):

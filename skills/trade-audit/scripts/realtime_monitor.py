@@ -14,17 +14,18 @@
 
 数据源:
   - 持仓: trade_audit (sell_date IS NULL)
-  - 实时行情: 腾讯 qt.gtimg.cn
+  - 实时行情: TDX API (via tdx_client)
 """
 import argparse
 import os
 import sys
-import urllib.request
-import re
 from datetime import datetime, date
 from collections import defaultdict
 
 import pymysql
+
+sys.path.insert(0, os.path.dirname(__file__))
+from tdx_client import TDXClient
 
 # ─── 配置 ──────────────────────────────────────────────────
 
@@ -32,8 +33,6 @@ MYSQL_HOST = '192.168.123.104'
 MYSQL_PORT = 3306
 MYSQL_USER = 'root'
 MYSQL_DB = 'hermes'
-
-TENCENT_QUOTE_URL = 'http://qt.gtimg.cn/q='
 
 # 浮盈三阶段阈值
 PROFIT_STAGE_1 = 0.03   # 3%: 设保本止损
@@ -53,67 +52,33 @@ BLACKLIST = {
 }
 
 
-# ─── 腾讯行情 ──────────────────────────────────────────────
+# ─── TDX行情 ──────────────────────────────────────────────
 
 def fetch_quotes(codes):
-    """批量获取实时行情, 返回 {code: {'price': float, 'name': str, 'change_pct': float}}"""
-    # 构建腾讯代码格式: sh600519, sz000001
-    tencent_codes = []
-    code_map = {}  # tencent_code -> raw_code
-    for code in codes:
-        if code.startswith(('6', '9')):
-            tc = f'sh{code}'
-        elif code.startswith(('0', '3')):
-            tc = f'sz{code}'
-        elif code.startswith('4') or code.startswith('8'):
-            tc = f'bj{code}'
-        else:
-            tc = f'sz{code}'
-        tencent_codes.append(tc)
-        code_map[tc] = code
+    """批量获取实时行情 (via TDX), 返回 {code: {'price', 'name', 'change_pct', 'yesterday_close'}}"""
+    if not codes:
+        return {}
 
-    if not tencent_codes:
+    tdx = TDXClient()
+
+    # codes是6位纯数字列表, batch_quote接受6位或TDX格式
+    try:
+        raw = tdx.batch_quote(codes)
+    except Exception as e:
+        print(f"  [ERROR] TDX batch_quote失败: {e}", file=sys.stderr)
         return {}
 
     results = {}
-    # 分批请求（每批20只）
-    for i in range(0, len(tencent_codes), 20):
-        batch = tencent_codes[i:i+20]
-        url = TENCENT_QUOTE_URL + ','.join(batch)
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            resp = urllib.request.urlopen(req, timeout=10)
-            text = resp.read().decode('gbk')
-
-            for line in text.strip().split(';'):
-                line = line.strip()
-                if not line or '=' not in line:
-                    continue
-                # v_sh600519="1~贵州茅台~600519~1856.00~..."
-                m = re.match(r'v_(sh|sz|bj)(\d+)="(.+)"', line)
-                if not m:
-                    continue
-                tc = f'{m.group(1)}{m.group(2)}'
-                raw_code = code_map.get(tc, m.group(2))
-                fields = m.group(3).split('~')
-
-                if len(fields) < 35:
-                    continue
-                try:
-                    price = float(fields[3])
-                    name = fields[1]
-                    yesterday_close = float(fields[4])
-                    change_pct = (price - yesterday_close) / yesterday_close * 100 if yesterday_close else 0
-                    results[raw_code] = {
-                        'price': price,
-                        'name': name,
-                        'change_pct': change_pct,
-                        'yesterday_close': yesterday_close,
-                    }
-                except (ValueError, IndexError):
-                    continue
-        except Exception as e:
-            print(f"  [ERROR] 获取行情失败: {e}", file=sys.stderr)
+    for code in codes:
+        q = raw.get(code)
+        if not q:
+            continue
+        results[code] = {
+            'price': q.get('price', 0),
+            'name': '',  # name从holdings表获取, 此处留空
+            'change_pct': q.get('change_pct', 0),
+            'yesterday_close': q.get('prev_close', 0),
+        }
 
     return results
 

@@ -7,7 +7,7 @@
 数据源:
   - 日线四线: tdx_data.day_kline
   - 15分K线: hermes.kline_15min
-  - 实时行情: 腾讯 qt.gtimg.cn
+  - 实时行情: TDX API (tdx_client)
 
 用法:
   MYSQL_PWD=xxx python pivot_strategy.py --stock 002491 --signal
@@ -16,8 +16,7 @@
 import argparse
 import os
 import sys
-import urllib.request
-import re
+
 from datetime import datetime, date, timedelta
 
 import pymysql
@@ -29,42 +28,55 @@ MYSQL_PORT = 3306
 MYSQL_USER = 'root'
 MYSQL_DB = 'hermes'
 
-TENCENT_QUOTE_URL = 'http://qt.gtimg.cn/q='
-
 # 策略参数
 SUPPORT_TOLERANCE = 0.01      # 支撑位距离容差 ±1%
 SWING_LOOKBACK = 20           # 摆动高低点回溯天数
 RELIABLE_HOURS = [(11, 0, 11, 30), (13, 0, 13, 30)]  # 可靠时段
 
 
+# ─── TDX 客户端 ──────────────────────────────────────────
+
+_tdx_client = None
+
+def _get_tdx():
+    """懒加载 TDXClient 单例"""
+    global _tdx_client
+    if _tdx_client is None:
+        sys.path.insert(0, os.path.dirname(__file__))
+        from tdx_client import TDXClient
+        _tdx_client = TDXClient()
+    return _tdx_client
+
 # ─── 数据获取 ──────────────────────────────────────────────
 
 def get_tencent_price(code):
-    """获取腾讯实时行情"""
-    if code.startswith(('6', '9')):
-        tc = f'sh{code}'
-    elif code.startswith(('0', '3')):
-        tc = f'sz{code}'
-    elif code.startswith(('4', '8')):
-        tc = f'bj{code}'
-    else:
-        tc = f'sz{code}'
-    url = TENCENT_QUOTE_URL + tc
+    """通过 TDXClient 获取实时行情
+
+    返回格式(兼容旧接口):
+        {'name': str, 'price': float, 'yesterday_close': float}  或  None
+    """
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        resp = urllib.request.urlopen(req, timeout=10)
-        text = resp.read().decode('gbk')
-        m = re.search(r'"1~(.+?)"', text)
-        if not m:
+        tdx = _get_tdx()
+        q = tdx.quote(code)
+        if q is None:
             return None
-        fields = m.group(1).split('~')
+        # 尝试从 _raw 取股票名称
+        name = ''
+        raw = q.get('_raw', {})
+        if isinstance(raw, dict):
+            name = raw.get('Name', '')
+        # 回退: 用 search 查一次
+        if not name:
+            results = tdx.search(code)
+            if results:
+                name = results[0].get('Name', '') if isinstance(results[0], dict) else ''
         return {
-            'name': fields[0],
-            'price': float(fields[2]),
-            'yesterday_close': float(fields[3]),
+            'name': name,
+            'price': float(q['price']),
+            'yesterday_close': float(q['prev_close']),
         }
     except Exception as e:
-        print(f"  [WARN] 获取实时行情失败: {e}", file=sys.stderr)
+        print(f"  [WARN] 获取实时行情失败(TDX): {e}", file=sys.stderr)
         return None
 
 
