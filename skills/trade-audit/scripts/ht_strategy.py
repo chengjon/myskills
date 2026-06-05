@@ -577,7 +577,210 @@ def check_buy_signal(code, klines, quote, market_env):
         'signals': stop_signals,
         'total_score': total_score,
         'market_env': market_env['status'],
+        'buy_date': klines[-1].get('time', ''),
     }
+
+
+# ──── 模块5: 卖出规则 ────
+
+def calc_avg_price(minute_data):
+    """从分时数据计算均价线 (成交额/成交量)"""
+    if not minute_data:
+        return None, None
+    total_amount = 0
+    total_vol = 0
+    for p in minute_data:
+        vol = p.get('Number', p.get('volume', 0))
+        price = p.get('Price', p.get('price', 0))
+        if vol > 0 and price > 0:
+            total_amount += price * vol * 100  # 手→股
+            total_vol += vol * 100
+    if total_vol > 0:
+        return total_amount / total_vol / 1000, total_vol  # 厘→元
+    return None, None
+
+
+def check_sell_signal(code, buy_price, buy_date, klines30, quote, minute_data=None):
+    """次日卖出信号判断
+
+    Args:
+        code: 股票代码
+        buy_price: 买入价
+        buy_date: 买入日期
+        klines30: 近30日日K
+        quote: 当日实时行情
+        minute_data: 当日分时数据(可选)
+
+    Returns:
+        dict: {action, reason, price, profit_pct}
+    """
+    if not quote or not klines30 or len(klines30) < 5:
+        return {'action': 'hold', 'reason': '数据不足', 'price': 0, 'profit_pct': 0}
+
+    cur_price = quote.get('price', 0)
+    prev_close = quote.get('prev_close', 0)
+    open_price = quote.get('open', 0)
+
+    if cur_price <= 0 or buy_price <= 0:
+        return {'action': 'hold', 'reason': '价格异常', 'price': cur_price, 'profit_pct': 0}
+
+    profit_pct = (cur_price - buy_price) / buy_price * 100
+
+    closes = [k['close'] for k in klines30]
+    ma5 = calc_ma(closes, 5)
+    ma10 = calc_ma(closes, 10)
+    ma20 = calc_ma(closes, 20)
+
+    # 条件一: 低开止损 (>2%且破均线)
+    if prev_close > 0 and open_price < prev_close:
+        open_drop = (open_price - prev_close) / prev_close * 100
+        below_ma = (ma10 and open_price < ma10) or (ma20 and open_price < ma20)
+        if open_drop < -2 and below_ma:
+            return {
+                'action': 'sell_stop_loss',
+                'reason': f'低开{open_drop:.1f}%且破均线, 竞价止损',
+                'price': open_price,
+                'profit_pct': (open_price - buy_price) / buy_price * 100,
+            }
+
+    # 条件二: 低开未达止损但弱势 (15分钟未站上均价线)
+    if prev_close > 0 and open_price < prev_close:
+        if minute_data and len(minute_data) >= 15:
+            avg_price, _ = calc_avg_price(minute_data[:15])
+            if avg_price and cur_price < avg_price:
+                return {
+                    'action': 'sell_weak',
+                    'reason': f'低开后15分钟未站上均价线({avg_price:.2f})',
+                    'price': cur_price,
+                    'profit_pct': profit_pct,
+                }
+
+    # 条件三: 冲高到5日线 → 止盈一半
+    if ma5 and cur_price >= ma5:
+        return {
+            'action': 'sell_half',
+            'reason': f'冲高到5日线(MA5={ma5:.2f}), 止盈一半',
+            'price': cur_price,
+            'profit_pct': profit_pct,
+        }
+
+    # 条件三补充: 冲高回落破均价线 → 全部止盈
+    if minute_data and len(minute_data) >= 30:
+        avg_price, _ = calc_avg_price(minute_data)
+        if avg_price and cur_price < avg_price and profit_pct > 0:
+            # 今日最高价 > 均价线*1.005 说明冲高过
+            day_high = max(p.get('Price', p.get('price', 0)) / 1000 for p in minute_data)
+            if day_high > avg_price * 1.005:
+                return {
+                    'action': 'sell_profit',
+                    'reason': f'冲高({day_high:.2f})回落破均价线({avg_price:.2f})',
+                    'price': cur_price,
+                    'profit_pct': profit_pct,
+                }
+
+    # 条件四: 高开≥3%且5分钟未涨停 → 分批止盈
+    if prev_close > 0:
+        open_pct = (open_price - prev_close) / prev_close * 100
+        if open_pct >= 3:
+            today_chg = quote.get('change_pct', 0)
+            if today_chg < 9.5:  # 未涨停
+                return {
+                    'action': 'sell_high_open',
+                    'reason': f'高开{open_pct:.1f}%且未涨停, 分批止盈',
+                    'price': cur_price,
+                    'profit_pct': profit_pct,
+                }
+
+    # 条件五: 时间止损 (14:00未盈利 → 强制离场)
+    # 需要传入当前时间, 这里简化判断
+    if profit_pct < 0:
+        return {
+            'action': 'hold_warning',
+            'reason': f'当前亏损{profit_pct:.1f}%, 关注14:00时间止损',
+            'price': cur_price,
+            'profit_pct': profit_pct,
+        }
+
+    return {'action': 'hold', 'reason': '持仓中', 'price': cur_price, 'profit_pct': profit_pct}
+
+
+def run_sell_check(holdings, tdx_client=None):
+    """次日卖出检查
+
+    Args:
+        holdings: list of {code, buy_price, buy_date, shares}
+        tdx_client: TDX客户端
+
+    Returns:
+        list of sell_signal dict
+    """
+    tdx = tdx_client or get_tdx()
+    results = []
+
+    for h in holdings:
+        code = h['code']
+        tdx_code = TDXClient.code_to_tdx(code)
+        try:
+            quote = tdx.quote(tdx_code)
+            klines = tdx.kline_day(tdx_code, count=30)
+            minute = tdx.minute(tdx_code)
+        except:
+            continue
+
+        sig = check_sell_signal(code, h['buy_price'], h.get('buy_date', ''),
+                                klines, quote, minute)
+        sig['code'] = code
+        sig['name'] = quote.get('name', code)
+        sig['buy_price'] = h['buy_price']
+        results.append(sig)
+
+    return results
+
+
+# ──── 模块6: 板块热度因子 ────
+
+def get_sector_heat(tdx_client=None):
+    """获取板块涨幅排名 (东财行业板块)
+
+    Returns:
+        dict: {sector_name: change_pct}  涨幅前5
+    """
+    import urllib.request
+    import json as _json
+
+    # 东财行业板块涨幅排名
+    url = 'https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:90+t:2+f:!50&fields=f12,f14,f3,f2'
+    try:
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0',
+            'Referer': 'https://quote.eastmoney.com'
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode('utf-8'))
+        diff = data.get('data', {}).get('diff', [])
+        sectors = {}
+        for item in diff:
+            name = item.get('f14', '')
+            chg = item.get('f3', 0)
+            if name and isinstance(chg, (int, float)):
+                sectors[name] = chg
+        # 取涨幅前5
+        top5 = dict(sorted(sectors.items(), key=lambda x: x[1], reverse=True)[:5])
+        return top5
+    except:
+        return {}
+
+
+def add_sector_bonus(code, sector_heat, klines_map=None):
+    """板块热度加分
+
+    Returns:
+        int: 加分值 (0 or 1)
+    """
+    # 简化: 如果个股当日涨幅>0且板块热度存在, 给加分
+    # 完整版需要个股→板块映射表(申万二级)
+    # 这里先返回0, 后续有映射数据再补充
+    return 0
 
 
 # ──── 主流程 ────
@@ -849,6 +1052,222 @@ def show_signal(code, tdx_client=None):
         print('\n无止跌信号')
 
 
+# ──── 模块7: 回测引擎 ────
+
+def backtest_single(code, tdx_client, start_date=None, end_date=None):
+    """单只股票历史回测
+
+    流程: 遍历每个交易日, 用截至当日的日K判断选股+买入信号,
+          次日按卖出规则模拟卖出, 记录每笔交易结果.
+
+    Args:
+        code: 6位股票代码
+        tdx_client: TDXClient
+        start_date: YYYYMMDD, 默认60日前
+        end_date: YYYYMMDD, 默认最新
+
+    Returns:
+        dict: {code, trades, stats}
+    """
+    tdx = tdx_client
+    tdx_code = TDXClient.code_to_tdx(code)
+    # 取120根日K (足够覆盖MA20+回测窗口)
+    all_klines = tdx.kline_day(tdx_code, count=120)
+    if not all_klines or len(all_klines) < 30:
+        return {'code': code, 'error': 'K线数据不足'}
+
+    trades = []
+    i = 30  # 从第30根开始(有足够MA数据)
+
+    while i < len(all_klines) - 1:
+        klines_up_to = all_klines[:i+1]  # 截至当日
+        today = klines_up_to[-1]
+        tomorrow = all_klines[i+1]
+
+        # 大盘环境 (用上证日K)
+        try:
+            idx_klines = tdx.kline_day('sh000001', count=30)
+            market = check_market_env(tdx)
+        except:
+            market = {'position_pct': 50}
+
+        # 二次筛选
+        ok, reasons = secondary_filter(code, klines_up_to[-25:], None)
+        if not ok:
+            i += 1
+            continue
+
+        # 止跌信号
+        closes = [k['close'] for k in klines_up_to]
+        ma10 = calc_ma(closes, 10)
+        ma20 = calc_ma(closes, 20)
+        signals = detect_stop_fall_signals(klines_up_to, ma10, ma20)
+        if not signals:
+            i += 1
+            continue
+
+        # 买入: 以当日收盘价模拟尾盘买入
+        buy_price = today['close']
+        buy_date = date_str(today['time'])
+
+        # 卖出模拟 (次日)
+        sell_price = None
+        sell_reason = ''
+        next_open = tomorrow['open']
+        next_close = tomorrow['close']
+        next_high = tomorrow['high']
+        next_low = tomorrow['low']
+        prev_close = today['close']
+
+        # 条件一: 低开止损 (>2%且破均线)
+        if prev_close > 0:
+            open_drop = (next_open - prev_close) / prev_close * 100
+            below_ma = (ma10 and next_open < ma10) or (ma20 and next_open < ma20)
+            if open_drop < -2 and below_ma:
+                sell_price = next_open
+                sell_reason = f'竞价止损(低开{open_drop:.1f}%)'
+
+        # 条件四: 高开≥3% → 开盘卖出
+        if not sell_price and prev_close > 0:
+            open_pct = (next_open - prev_close) / prev_close * 100
+            if open_pct >= 3:
+                sell_price = next_open
+                sell_reason = f'高开{open_pct:.1f}%止盈'
+
+        # 条件三: 冲高到5日线 → 取5日线价和收盘价的较高者
+        if not sell_price:
+            closes5 = [k['close'] for k in klines_up_to]
+            ma5 = calc_ma(closes5, 5)
+            if ma5 and next_high >= ma5:
+                sell_price = max(ma5, next_open)  # 模拟取MA5价或开盘价
+                sell_reason = f'冲高到MA5({ma5:.2f})'
+            else:
+                # 收盘卖出 (默认隔日交易)
+                sell_price = next_close
+                sell_reason = '收盘卖出'
+
+        if sell_price:
+            profit_pct = (sell_price - buy_price) / buy_price * 100
+            trades.append({
+                'buy_date': buy_date,
+                'buy_price': round(buy_price, 2),
+                'sell_date': date_str(tomorrow['time']),
+                'sell_price': round(sell_price, 2),
+                'profit_pct': round(profit_pct, 2),
+                'sell_reason': sell_reason,
+                'signals': [s['type'] for s in signals],
+            })
+
+        # 跳过次日 (已卖出)
+        i += 2
+
+    # 统计
+    if not trades:
+        return {'code': code, 'trades': 0, 'stats': {}}
+
+    profits = [t['profit_pct'] for t in trades]
+    wins = [p for p in profits if p > 0]
+    losses = [p for p in profits if p <= 0]
+    total_profit = sum(profits)
+    avg_profit = sum(profits) / len(profits) if profits else 0
+    win_rate = len(wins) / len(trades) * 100 if trades else 0
+
+    stats = {
+        'total_trades': len(trades),
+        'win_trades': len(wins),
+        'loss_trades': len(losses),
+        'win_rate': round(win_rate, 1),
+        'avg_profit_pct': round(avg_profit, 2),
+        'total_profit_pct': round(total_profit, 2),
+        'max_win': round(max(profits), 2) if profits else 0,
+        'max_loss': round(min(profits), 2) if profits else 0,
+    }
+
+    return {'code': code, 'trades': trades, 'stats': stats}
+
+
+def run_backtest(codes=None, top_n=20, tdx_client=None):
+    """批量回测
+
+    Args:
+        codes: 指定代码列表, None=从成交额前top_n选
+        top_n: 未指定codes时, 取成交额前N只
+        tdx_client: TDXClient
+    """
+    tdx = tdx_client or get_tdx()
+    load_config()
+
+    print('━' * 60)
+    print('  汇通理论 — 回测引擎')
+    print('━' * 60)
+
+    if not codes:
+        # 从股票池取成交额前N只
+        print('\n[1] 获取股票池...')
+        universe = get_stock_universe(tdx)
+        # 取有成交量的前N只
+        by_vol = sorted(
+            [(c, q) for c, q in universe.items() if q.get('volume', 0) > 0],
+            key=lambda x: x[1].get('volume', 0),
+            reverse=True
+        )
+        codes = [c for c, _ in by_vol[:top_n]]
+        print(f'  取成交额前{top_n}只: {codes[:5]}...')
+
+    print(f'\n[2] 逐只回测({len(codes)}只)...')
+    results = []
+    for code in codes:
+        r = backtest_single(code, tdx)
+        if 'error' not in r and r.get('trades'):
+            results.append(r)
+            s = r['stats']
+            print(f'  {code}: {s["total_trades"]}笔 胜率{s["win_rate"]:.0f}% '
+                  f'均利{s["avg_profit_pct"]:+.2f}% 总{s["total_profit_pct"]:+.1f}%')
+
+    if not results:
+        print('\n  无回测结果')
+        return []
+
+    # 汇总统计
+    all_trades_count = sum(r['stats']['total_trades'] for r in results)
+    all_profits = []
+    for r in results:
+        all_profits.extend([t['profit_pct'] for t in r['trades']])
+
+    total_win = len([p for p in all_profits if p > 0])
+    total_loss = len([p for p in all_profits if p <= 0])
+
+    print(f'\n{"━" * 60}')
+    print(f'  回测汇总 ({len(results)}只, {all_trades_count}笔交易)')
+    print(f'{"━" * 60}')
+    print(f'  总胜率: {total_win}/{all_trades_count} = {total_win/all_trades_count*100:.1f}%')
+    print(f'  平均每笔: {sum(all_profits)/len(all_profits):+.2f}%')
+    print(f'  累计收益: {sum(all_profits):+.2f}%')
+    print(f'  最大单笔盈利: {max(all_profits):+.2f}%')
+    print(f'  最大单笔亏损: {min(all_profits):+.2f}%')
+
+    # 止损类型分布
+    reasons = {}
+    for r in results:
+        for t in r['trades']:
+            reason = t['sell_reason'].split('(')[0]  # 去掉括号细节
+            reasons[reason] = reasons.get(reason, 0) + 1
+    print(f'\n  卖出类型分布:')
+    for reason, cnt in sorted(reasons.items(), key=lambda x: x[1], reverse=True):
+        pct = cnt / all_trades_count * 100
+        print(f'    {reason}: {cnt}笔 ({pct:.0f}%)')
+
+    # 胜率前5
+    by_wr = sorted(results, key=lambda r: r['stats']['win_rate'], reverse=True)
+    print(f'\n  胜率前5:')
+    for r in by_wr[:5]:
+        s = r['stats']
+        print(f'    {r["code"]}: 胜率{s["win_rate"]:.0f}% 均利{s["avg_profit_pct"]:+.2f}% ({s["total_trades"]}笔)')
+
+    print(f'{"━" * 60}')
+    return results
+
+
 # ──── CLI ────
 
 def main():
@@ -857,6 +1276,11 @@ def main():
     parser.add_argument('--date', help='指定日期(YYYYMMDD), 回测模式')
     parser.add_argument('--signal', help='查看指定股票的止跌信号')
     parser.add_argument('--market', action='store_true', help='查看大盘环境')
+    parser.add_argument('--sell', nargs='+', metavar='CODE:PRICE',
+                        help='卖出检查, 格式: 600172:13.50 [002015:22.00]')
+    parser.add_argument('--backtest', action='store_true', help='回测(成交额前20只)')
+    parser.add_argument('--backtest-codes', nargs='+', metavar='CODE',
+                        help='指定代码回测, 如: --backtest-codes 600172 002015')
     parser.add_argument('--pool', choices=['active', 'trend', 'amount'], help='只输出指定池')
     args = parser.parse_args()
 
@@ -867,6 +1291,37 @@ def main():
         print(json.dumps(env, ensure_ascii=False, indent=2, default=str))
     elif args.signal:
         show_signal(args.signal)
+    elif args.sell:
+        # 解析 CODE:PRICE
+        holdings = []
+        for item in args.sell:
+            parts = item.split(':')
+            if len(parts) == 2:
+                holdings.append({
+                    'code': parts[0],
+                    'buy_price': float(parts[1]),
+                    'buy_date': '',
+                })
+        if holdings:
+            results = run_sell_check(holdings)
+            print('\n卖出信号检查:')
+            for r in results:
+                action_map = {
+                    'sell_stop_loss': '🔴 竞价止损',
+                    'sell_weak': '🟡 弱势卖出',
+                    'sell_half': '🟢 止盈一半',
+                    'sell_profit': '🟢 全部止盈',
+                    'sell_high_open': '🟢 高开止盈',
+                    'hold_warning': '⚠️ 持仓预警',
+                    'hold': '⚪ 继续持有',
+                }
+                label = action_map.get(r['action'], r['action'])
+                print(f'  {r["code"]} {r.get("name","")} | {label}')
+                print(f'    {r["reason"]} | 现价{r["price"]:.2f} 盈亏{r["profit_pct"]:+.1f}%')
+    elif args.backtest:
+        run_backtest(top_n=20)
+    elif args.backtest_codes:
+        run_backtest(codes=args.backtest_codes)
     elif args.scan:
         results = run_scan(target_date=args.date)
         if results:
