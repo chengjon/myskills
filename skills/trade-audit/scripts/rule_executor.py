@@ -359,6 +359,7 @@ def main():
     parser.add_argument('--all', action='store_true', help='全量扫描')
     parser.add_argument('--summary', action='store_true', help='仅输出统计摘要')
     parser.add_argument('--check', type=str, help='买入前实时检查指定股票代码')
+    parser.add_argument('--pivot', action='store_true', help='结合潜行轴心点策略信号')
     args = parser.parse_args()
 
     pwd = os.environ.get('MYSQL_PWD', '')
@@ -374,6 +375,23 @@ def main():
     if args.check:
         code = args.check.strip()
         run_check_mode(cur, code, stock_stats, consec_map, conn)
+
+        # ── --pivot: 追加潜行轴心点信号 ──
+        if args.pivot:
+            try:
+                from pivot_strategy import run_pivot_check
+                print()
+                signal, report, levels, targets = run_pivot_check(code, verbose=True, cur=cur)
+                print(report)
+                if signal == 'BUY':
+                    print("  --> 轴心点策略: 绿灯 (支撑位+止跌确认)")
+                elif signal == 'WAIT':
+                    print("  --> 轴心点策略: 黄灯 (等待确认)")
+                else:
+                    print("  --> 轴心点策略: 无信号 (不在支撑位)")
+            except ImportError:
+                print("  [WARN] pivot_strategy.py 未找到，跳过轴心点检查")
+
         conn.close()
         return
 
