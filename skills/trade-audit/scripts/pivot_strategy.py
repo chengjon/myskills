@@ -277,7 +277,7 @@ def check_pivot_signal(levels, klines, current_price, verbose=False):
     elif best['confirmed']:
         signal = 'WAIT'  # 有确认但时段不可靠
     else:
-        signal = 'WAIT'  # 未确认
+        signal = 'BLOCKED'  # 在支撑位但无止跌确认 → 禁止买入
 
     detail = {
         'support_type': support_type,
@@ -290,9 +290,9 @@ def check_pivot_signal(levels, klines, current_price, verbose=False):
     if signal == 'BUY':
         detail['reason'] = f"支撑位({support_type})+止跌确认+时段可靠"
     elif best['confirmed']:
-        detail['reason'] = f"止跌+确认，但时段不在{RELIABLE_HOURS}"
+        detail['reason'] = f"止跌+确认，但时段不在可靠区间"
     else:
-        detail['reason'] = f"止跌K线出现({best['time']})，但未确认"
+        detail['reason'] = f"在支撑位({support_type})但无止跌确认 → 禁止买入"
 
     return signal, detail
 

@@ -376,7 +376,11 @@ def main():
         code = args.check.strip()
         run_check_mode(cur, code, stock_stats, consec_map, conn)
 
-        # ── --pivot: 追加潜行轴心点信号 ──
+        # ── --pivot: 追加潜行轴心点信号（方案A：禁止清单模式）──
+        # 定位：不是"必须条件"，而是"支撑位附近时的过滤条件"
+        # - 不在支撑位 → 不限制（区间中间46%胜率+1.37盈亏比=正期望）
+        # - 在支撑位+止跌确认 → 加分（55%胜率）
+        # - 在支撑位无止跌 → 禁止（39%胜率，唯一负期望-1.01%）
         if args.pivot:
             try:
                 from pivot_strategy import run_pivot_check
@@ -384,11 +388,14 @@ def main():
                 signal, report, levels, targets = run_pivot_check(code, verbose=True, cur=cur)
                 print(report)
                 if signal == 'BUY':
-                    print("  --> 轴心点策略: 绿灯 (支撑位+止跌确认)")
+                    print("  --> 轴心点: 绿灯 (支撑位+止跌确认) → 可加仓")
                 elif signal == 'WAIT':
-                    print("  --> 轴心点策略: 黄灯 (等待确认)")
-                else:
-                    print("  --> 轴心点策略: 无信号 (不在支撑位)")
+                    print("  --> 轴心点: 黄灯 (止跌确认但时段不可靠) → 可买但标准仓位")
+                elif signal == 'BLOCKED':
+                    print("  [!] 轴心点: 红灯 (在支撑位但无止跌确认) → 禁止买入")
+                    print("      数据支撑: 89笔avg -1.01%, 胜率39%, 唯一负期望入场")
+                else:  # NO_SUPPORT
+                    print("  --> 轴心点: 无限制 (不在支撑位, 区间中间期望+0.44%)")
             except ImportError:
                 print("  [WARN] pivot_strategy.py 未找到，跳过轴心点检查")
 
