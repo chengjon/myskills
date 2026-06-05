@@ -312,15 +312,19 @@ def secondary_filter(code, klines, quote=None):
         if consec_low >= 5:
             reasons_fail.append(f'连续{consec_low}日下跌')
 
-    # 3. 连涨≥N日 → 删除
+    # 3. 连涨≥N日且每日涨幅>X% → 删除
     consec_up = 0
     for i in range(len(klines)-1, 0, -1):
         if klines[i]['close'] > klines[i-1]['close']:
-            consec_up += 1
+            chg = (klines[i]['close'] - klines[i-1]['close']) / klines[i-1]['close'] * 100
+            if chg >= CONFIG.get('consecutive_up_threshold', 5.0):
+                consec_up += 1
+            else:
+                break
         else:
             break
     if consec_up >= CONFIG['max_consecutive_up']:
-        reasons_fail.append(f'连涨{consec_up}日≥{CONFIG["max_consecutive_up"]}')
+        reasons_fail.append(f'连涨{consec_up}日且每日涨幅>{CONFIG.get("consecutive_up_threshold", 5.0):.0f}%')
 
     # 4. 长上影线过多 (近5日有≥3根上影线>实体) → 删除
     recent = klines[-5:] if len(klines) >= 5 else klines
@@ -396,12 +400,20 @@ def detect_stop_fall_signals(klines, ma10=None, ma20=None):
         })
 
     # ──── 信号2: 曙光初现 ────
-    y_body = yesterday['close'] - yesterday['open']  # 阴线实体
+    y_body = yesterday['close'] - yesterday['open']  # 阴线实体(负数)
     t_body_range = today['close'] - today['open']
+    # 前日跌幅需≥dawn_prev_min_drop(默认3%)
+    if len(klines) >= 3:
+        prev_close_2 = klines[-3]['close']
+    else:
+        prev_close_2 = yesterday['open']
+    y_drop = (yesterday['close'] - prev_close_2) / prev_close_2 * 100 if prev_close_2 > 0 else 0
+
     if (yesterday['close'] < yesterday['open']  # 前日阴
+            and y_drop <= -CONFIG.get('dawn_prev_min_drop', 3.0)  # 前日跌幅≥3%
             and today['close'] > today['open']   # 今日阳
             and today['open'] < yesterday['close']  # 低开
-            and y_body < 0):
+            and abs(y_body) > 0):
         penetration = t_body_range / abs(y_body)
         if penetration >= CONFIG['dawn_penetration']:
             signals.append({
@@ -426,10 +438,20 @@ def detect_stop_fall_signals(klines, ma10=None, ma20=None):
                 })
 
     # ──── 信号4: 孕线/母子线 ────
-    if (yesterday['close'] < yesterday['open']  # 前日大阴
+    y_body_size = kline_body(yesterday)
+    t_body_size = kline_body(today)
+    # 前日跌幅需≥big_yin_drop(默认3%)
+    if len(klines) >= 3:
+        prev_close_2 = klines[-3]['close']
+    else:
+        prev_close_2 = yesterday['open']
+    y_drop = (yesterday['close'] - prev_close_2) / prev_close_2 * 100 if prev_close_2 > 0 else 0
+
+    if (yesterday['close'] < yesterday['open']  # 前日阴
+            and y_drop <= -CONFIG.get('big_yin_drop', 3.0)  # 前日大阴线(跌幅≥3%)
             and today['high'] <= yesterday['open']   # 今日被包含
             and today['low'] >= yesterday['close']
-            and kline_body(yesterday) > kline_body(today) * 2):
+            and y_body_size > t_body_size * 2):
         ma_hit = near_ma(today['low'])
         desc = f'孕线(前阴实体={kline_body(yesterday):.2f}, 今={kline_body(today):.2f})'
         if ma_hit:
@@ -498,7 +520,7 @@ def check_buy_signal(code, klines, quote, market_env):
     if not near_ma10 and not near_ma20:
         return None
 
-    # 条件3: 当日K线为阴线或小阳线(≤2%)
+    # 条件3: 当日K线为阴线或小阳线(≤3%)
     if len(klines) >= 2:
         prev_close = klines[-2]['close']
         if prev_close > 0:
@@ -511,6 +533,10 @@ def check_buy_signal(code, klines, quote, market_env):
     is_yin = cur_price <= today['open']  # 阴线
     is_small_yang = not is_yin and today_chg <= CONFIG['max_buy_pct']
     if not is_yin and not is_small_yang:
+        return None
+
+    # 条件3.5: 避免涨停板买入 (>9.5%跳过)
+    if today_chg >= CONFIG.get('limit_up_skip', 9.5):
         return None
 
     # 条件4: 止跌信号
@@ -767,7 +793,12 @@ def run_scan(tdx_client=None, target_date=None):
 
     # 按得分排序
     buy_signals.sort(key=lambda x: x['total_score'], reverse=True)
-    buy_signals = buy_signals[:CONFIG['max_picks']]
+    # 动态仓位: 大盘5日线下减少选股数
+    max_picks = CONFIG['max_picks']
+    if market.get('index_close', 0) < market.get('ma5', float('inf')):
+        max_picks = CONFIG.get('max_picks_below_ma5', 2)
+        print(f'\n  📊 大盘5日线下，最多选{max_picks}只')
+    buy_signals = buy_signals[:max_picks]
 
     # Step 5: 输出结果
     print('\n' + '━' * 60)

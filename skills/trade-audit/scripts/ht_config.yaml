@@ -6,10 +6,11 @@ active_days: [10, 20]          # 活跃股回溯天数
 active_threshold: 7.0          # 单日涨幅阈值(%)
 limit_up_threshold: 9.8        # 涨停阈值(%)
 trend_days: 25                 # 强趋势回溯天数
-trend_gain: 50.0               # 强趋势涨幅阈值(%)
+trend_gain: 35.0               # 强趋势涨幅阈值(%)
 top_amount_count: 50           # 成交额前N
 min_amount: 100000000          # 最低成交额(1亿)
-max_consecutive_up: 3          # 最大连涨天数
+max_consecutive_up: 3          # 连涨天数阈值
+consecutive_up_threshold: 5.0  # 连涨每日涨幅阈值(%)
 ma_near_pct: 3.0              # 均线附近范围(%)
 
 # 止跌信号参数
@@ -17,11 +18,15 @@ shadow_ratio: 2.0             # 下影线/实体比
 doji_body_pct: 0.1            # 十字星实体占比
 flat_bottom_diff: 1.0         # 平底最低价差(%)
 dawn_penetration: 0.5         # 曙光初现深入比例
+dawn_prev_min_drop: 3.0       # 曙光初现前日最小跌幅(%)
+big_yin_drop: 3.0             # 大阴线最小跌幅(%)
 
 # 买入参数
 buy_time: "14:30"             # 买入时间窗口
-max_buy_pct: 2.0              # 最大允许阳线(%)
+max_buy_pct: 3.0              # 最大允许阳线(%)
+limit_up_skip: 9.5            # 涨停板跳过(%)
 max_picks: 3                  # 最多选几只
+max_picks_below_ma5: 2        # 大盘5日线下最多选几只
 
 # 大盘参数
 index_code: "sh000001"        # 参考指数
