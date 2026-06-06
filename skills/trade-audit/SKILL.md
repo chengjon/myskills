@@ -9,7 +9,11 @@ dependency:
   system:
     - mysql client
   env:
+    - MYSQL_HOST
+    - MYSQL_PORT
+    - MYSQL_USER
     - MYSQL_PWD
+    - TDX_API_URL
 ---
 
 # 交易复盘审计（trade-audit）
@@ -24,9 +28,11 @@ dependency:
 
 ## 前置条件
 
-- MySQL: `${MYSQL_HOST}:3306/hermes`（环境变量 MYSQL_PWD）
+- MySQL: `${MYSQL_HOST}:${MYSQL_PORT}/hermes`（连接信息统一存放在 `~/.hermes/.env`，脚本无硬编码默认值）
+- 私有工具库: `~/.hermes/local/`（tdx_client.py + data_sources.py，不同步Git）
+- 脚本引用: `sys.path.insert(0, os.path.expanduser('~/.hermes/local'))`
+- 环境变量集中管理: `~/.hermes/.env` 是所有敏感信息的唯一存储点（MYSQL_HOST/PORT/USER/PWD + TDX_API_URL）
 - 平安交易表: `pingan_normal_trade` / `pingan_margin_trade`
-- 腾讯K线API可用（WSL下新浪被封，腾讯为fallback）
 - venv选择: 路径分析+15分分析需numpy → `/root/.hermes/hermes-agent/venv`; 仅pymysql → `/opt/claude/Scrapling/.venv`
 
 ## 运行方式
@@ -293,7 +299,10 @@ calc_pingan_pnl.py (FIFO精确配对)
 - **V3评分对历史交易区分力极差**：363笔2026年前交易中，discipline_score恒=1（全部1分），risk_control_score恒=0（全部0分），四分法只产生"规则外盈利/规则外亏损"两类（无"规则内"），total_score集中在2-5分（62%是4分）。根因：V3假设有止损/计划记录，历史交易无记录→全部判"违规"→4维中2维形同虚设
 - **V4已实施完成(2026-06-04)**：363笔全量入库，6维15分+六级分类(A-F含子分类F1/F2/F3/E1/E2)+9种verdict(含discipline_sell)+行为标签+4项量化指标+shortfall_report。评分引擎: `audit_v4_scorer.py`，配置: `review_config.yaml → v4_scoring`。报告生成器: `report_v4.py`(10章节420行MD，所有结论从MySQL实时查询可复现)
 - **good_profit含亏损交易**：V3的calc_sell_verdict判定good_profit时未先检查realized_pnl>0，导致71笔good_profit中50笔实际亏损。修正：判定前必须先检查sell_price > buy_price
-- **MySQL密码获取**：代码从MYSQL_PWD环境变量读取。若未设置，可从session_search搜索历史会话（关键词：MYSQL_PWD password mysql）或daily-stock skill的README.md中获取明文
+- **MySQL密码获取**：代码从MYSQL_PWD环境变量读取，无硬编码默认值。运行时必须export: `MYSQL_HOST=x MYSQL_PWD=x python3 xxx.py`
+- **敏感信息零容忍**：skills/ 目录同步到 GitHub chengjon/myskills，严禁包含密码/IP/密钥。含内网IP/密码的文件（tdx_client.py、data_sources.py）存放在 `~/.hermes/local/`（私有工具库，不同步Git）。脚本引用方式: `sys.path.insert(0, os.path.expanduser('~/.hermes/local'))`
+- **目录分层**：`~/.hermes/local/` = 私有工具库(含IP/密码, 不同步Git) / `~/.hermes/skills/` = 公开技能(同步GitHub)。新建Python模块时先判断是否含敏感信息再决定放哪个目录
+- **安全清理流程**：推送前用 `grep -rn '密码/IP/key' skills/ --include='*.py'` 扫描；修复模式: 硬编码→`os.environ.get('VAR','')`，残留→删除或移到local/；MD/YAML也必须脱敏
 - **临时脚本债务**：分析过程中常用 `/tmp/*.py` 临时脚本跑数据，但报告定稿后必须将查询逻辑整合到技能内正式工具（如 `report_v4.py`），否则下次"跑一下报告"无法复现。临时脚本不是技能的一部分
 - **报告生成器架构**：`report_v4.py` 采用"查询函数 + Markdown拼接"模式——每个章节对应一个或多个 `query_*()` 函数从MySQL取数据，`generate_report()` 按章节顺序拼接MD行。新增章节只需: (1) 写query函数 (2) 在generate_report中加入MD输出段。入口: `python report_v4.py` 或 `python audit_v4_scorer.py --report`
 - **BOLL %b呈U型分布(非正态)**：363笔历史交易的stk_boll_pctb是双峰分布——0-9占46.5%, 90-100占27.5%, 中间段分散。因此用BOLL阈值做标签时，10/90会导致77%被标"极端"(无区分力)，必须收窄到5/95。任何基于BOLL%B的分类都应先查分布再定阈值
@@ -302,6 +311,8 @@ calc_pingan_pnl.py (FIFO精确配对)
 - **V3 is_impulsive基线偏差**：历史交易中82.9%被标is_impulsive=1，因V3冲动检测假设有止损/计划记录(历史无→全部判违规→全部标冲动)。V4.1改用硬信号：连亏>=4/同日>=4单独触发，或is_impulsive+(连亏>=2或同日>=2)组合触发。冲动率降至64.7%
 - **同一股票反复大亏**：perfect_stop TOP10中多只股票出现2-3次(梅安森×3, 新瀚新材×2, 华如科技×2)。应考虑在规则引擎中加入"同股N次亏损→黑名单"自动机制
 - **heredoc/多行字符串在execute_code中的陷阱**：Python heredoc内嵌SQL含引号/换行时，execute_code的sandbox会解析失败。改用write_file写临时脚本再terminal执行，避免嵌套引用问题
+- **sed插入Python字符串引号嵌套陷阱**：用 terminal() + sed 往 .py 文件插入 `os.environ.get('VAR', 'default')` 时，shell单双引号与Python字符串引号冲突，导致 `'~/.hermes/local'` 变成 `~/.hermes/local`（丢失引号）。修复方法：(1) 用 patch 工具替代 sed (2) 或写临时Python脚本用文件操作替换。批量替换时优先写 `/tmp/fix.py` 用 Python open/read/replace/write
+- **新增os.environ.get()必须同步添加import os**：给未导入os的文件添加os.environ.get()调用时，LSP会报 `os is not defined`。必须在文件顶部加入 `import os`
 
 ## 交易路径分析（已实现）
 
