@@ -163,7 +163,7 @@ def _fetch_kline_from_tdx(code: str) -> List[Dict]:
     通过TDX Client获取15分钟K线数据
     返回: [{date, day, open, high, low, close, volume}, ...] 按时间正序
     """
-sys.path.insert(0, os.path.expanduser(~/.hermes/local))  # 私有工具库
+sys.path.insert(0, os.path.expanduser('~/.hermes/local'))  # 私有工具库
     from tdx_client import TDXClient
     tdx = TDXClient()
     tdx_code = TDXClient.code_to_tdx(code)

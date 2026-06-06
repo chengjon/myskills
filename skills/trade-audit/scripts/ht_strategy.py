@@ -31,7 +31,7 @@ import sys
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.expanduser(~/.hermes/local))  # 私有工具库
+sys.path.insert(0, os.path.expanduser('~/.hermes/local'))  # 私有工具库
 from tdx_client import TDXClient
 
 # ──── 默认参数 (可被 ht_config.yaml 覆盖) ────
