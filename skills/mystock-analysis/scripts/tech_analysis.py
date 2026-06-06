@@ -18,6 +18,7 @@ import numpy as np
 
 # 加载 TDXClient
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'trade-audit', 'scripts'))
+sys.path.insert(0, os.path.expanduser(~/.hermes/local))  # 私有工具库
 from tdx_client import TDXClient
 
 _tdx = TDXClient()

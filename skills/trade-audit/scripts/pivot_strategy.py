@@ -43,6 +43,7 @@ def _get_tdx():
     global _tdx_client
     if _tdx_client is None:
         sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.expanduser(~/.hermes/local))  # 私有工具库
         from tdx_client import TDXClient
         _tdx_client = TDXClient()
     return _tdx_client

@@ -25,6 +25,7 @@ from collections import defaultdict
 import pymysql
 
 sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.expanduser(~/.hermes/local))  # 私有工具库
 from tdx_client import TDXClient
 
 # ─── 配置 ──────────────────────────────────────────────────
