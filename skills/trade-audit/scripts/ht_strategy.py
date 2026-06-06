@@ -559,6 +559,11 @@ def check_buy_signal(code, klines, quote, market_env):
         if avg_5 > 0 and avg_3 / avg_5 > 1.5:
             total_score += 1
 
+    # 板块热度加分
+    bonus, bonus_reason = add_sector_bonus(code)
+    if bonus > 0:
+        total_score += bonus
+
     ma_label = ''
     if near_ma10:
         ma_label += f'MA10({ma10:.2f})'
@@ -578,6 +583,7 @@ def check_buy_signal(code, klines, quote, market_env):
         'total_score': total_score,
         'market_env': market_env['status'],
         'buy_date': klines[-1].get('time', ''),
+        'sector_bonus': bonus_reason if bonus > 0 else '',
     }
 
 
@@ -739,48 +745,129 @@ def run_sell_check(holdings, tdx_client=None):
 
 # ──── 模块6: 板块热度因子 ────
 
-def get_sector_heat(tdx_client=None):
-    """获取板块涨幅排名 (东财行业板块)
+# 申万二级→指数代码映射 (从MySQL/akshare动态构建)
+_SW2_INDEX_CACHE = None
+
+
+def _build_sw2_index_map():
+    """构建申万二级行业名称→akshare指数代码的映射
+
+    数据源: MySQL mystocks.sw_industry_classification (个股→行业)
+            + akshare sw_index_second_info (行业→指数代码)
+    """
+    global _SW2_INDEX_CACHE
+    if _SW2_INDEX_CACHE is not None:
+        return _SW2_INDEX_CACHE
+
+    name_to_idx = {}
+
+    # 1. 从akshare获取二级指数列表
+    try:
+        import akshare as ak
+        df = ak.sw_index_second_info()
+        for _, row in df.iterrows():
+            name = row['行业名称'].replace('Ⅱ', '').strip()
+            code = row['行业代码'].replace('.SI', '')
+            name_to_idx[name] = code
+    except Exception as e:
+        print(f'  akshare获取二级指数列表失败: {e}', file=sys.stderr)
+
+    _SW2_INDEX_CACHE = name_to_idx
+    return name_to_idx
+
+
+def get_stock_sw2(code, conn=None):
+    """获取个股所属申万二级行业
+
+    Args:
+        code: 6位股票代码 (如 '600172')
+        conn: 可选pymysql连接
 
     Returns:
-        dict: {sector_name: change_pct}  涨幅前5
+        str: 二级行业名称, None=未找到
     """
-    import urllib.request
-    import json as _json
-
-    # 东财行业板块涨幅排名
-    url = 'https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:90+t:2+f:!50&fields=f12,f14,f3,f2'
     try:
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0',
-            'Referer': 'https://quote.eastmoney.com'
-        })
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = _json.loads(resp.read().decode('utf-8'))
-        diff = data.get('data', {}).get('diff', [])
-        sectors = {}
-        for item in diff:
-            name = item.get('f14', '')
-            chg = item.get('f3', 0)
-            if name and isinstance(chg, (int, float)):
-                sectors[name] = chg
-        # 取涨幅前5
-        top5 = dict(sorted(sectors.items(), key=lambda x: x[1], reverse=True)[:5])
+        import pymysql
+        own_conn = conn is None
+        if own_conn:
+            conn = pymysql.connect(
+                host='192.168.123.104', user='root',
+                password=os.environ.get('MYSQL_PWD', 'c790414J'),
+                database='mystocks', connect_timeout=5, read_timeout=5
+            )
+        cur = conn.cursor()
+        # 兼容 600172 和 600172.SH
+        patterns = [f'{code}%', code]
+        for pat in patterns:
+            cur.execute(
+                "SELECT 新版二级行业 FROM sw_industry_classification "
+                "WHERE 股票代码 LIKE %s AND 新版二级行业 != '' LIMIT 1",
+                (pat,)
+            )
+            r = cur.fetchone()
+            if r:
+                if own_conn:
+                    conn.close()
+                return r[0]
+        if own_conn:
+            conn.close()
+    except Exception:
+        pass
+    return None
+
+
+def get_sector_heat(tdx_client=None):
+    """获取申万二级行业涨幅排名
+
+    Returns:
+        dict: {行业名称: 涨跌幅%}  涨幅前5
+    """
+    try:
+        import akshare as ak
+        df = ak.index_realtime_sw(symbol='二级行业')
+        # 计算涨跌幅: (最新价-昨收盘)/昨收盘*100
+        df['涨跌幅'] = (df['最新价'] - df['昨收盘']) / df['昨收盘'] * 100
+        df = df.sort_values('涨跌幅', ascending=False)
+        top5 = {}
+        for _, row in df.head(5).iterrows():
+            top5[row['指数名称']] = round(row['涨跌幅'], 2)
         return top5
-    except:
+    except Exception as e:
+        print(f'  获取板块热度失败: {e}', file=sys.stderr)
         return {}
 
 
-def add_sector_bonus(code, sector_heat, klines_map=None):
+def add_sector_bonus(code, sector_heat=None):
     """板块热度加分
+
+    逻辑: 个股所属申万二级行业在涨幅前5名 → +1分
+
+    Args:
+        code: 6位股票代码
+        sector_heat: get_sector_heat()的结果, None=自动获取
 
     Returns:
         int: 加分值 (0 or 1)
+        str: 加分原因
     """
-    # 简化: 如果个股当日涨幅>0且板块热度存在, 给加分
-    # 完整版需要个股→板块映射表(申万二级)
-    # 这里先返回0, 后续有映射数据再补充
-    return 0
+    if sector_heat is None:
+        sector_heat = get_sector_heat()
+    if not sector_heat:
+        return 0, ''
+
+    # 查个股所属行业
+    sw2_name = get_stock_sw2(code)
+    if not sw2_name:
+        return 0, ''
+
+    # 检查是否在热度前5
+    clean_name = sw2_name.replace('Ⅱ', '').strip()
+    for hot_name, chg in sector_heat.items():
+        hot_clean = hot_name.replace('Ⅱ', '').strip()
+        if clean_name == hot_clean or sw2_name == hot_name:
+            return 1, f'板块热度: {hot_name}({chg:+.1f}%)'
+
+    return 0, ''
 
 
 # ──── 主流程 ────
@@ -1014,6 +1101,8 @@ def run_scan(tdx_client=None, target_date=None):
             print(f'      得分: {s["total_score"]}  大盘: {s["market_env"]}')
             for sig in s['signals']:
                 print(f'      📊 {sig["desc"]} (+{sig["score"]}分)')
+            if s.get('sector_bonus'):
+                print(f'      🔥 {s["sector_bonus"]} (+1分)')
     else:
         print('  ❌ 今日无符合条件的标的')
 
