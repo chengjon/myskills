@@ -363,7 +363,7 @@ def main():
     args = parser.parse_args()
 
     pwd = os.environ.get('MYSQL_PWD', '')
-    conn = pymysql.connect(host='192.168.123.104', port=3306, user='root',
+    conn = pymysql.connect(host=os.environ.get('MYSQL_HOST', ''), port=3306, user='root',
                            password=pwd, database='hermes', charset='utf8mb4')
     cur = conn.cursor()
 

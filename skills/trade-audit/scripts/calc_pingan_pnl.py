@@ -11,7 +11,7 @@ from datetime import datetime, date
 import os
 
 MYSQL_CONFIG = {
-    "host": "192.168.123.104",
+    "host": os.environ.get("MYSQL_HOST", ""),
     "port": 3306,
     "user": "root",
     "password": os.environ.get("MYSQL_PWD", ""),

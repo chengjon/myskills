@@ -28,7 +28,7 @@ HOLDINGS_DIR = os.path.join(VAULT_BASE, 'mystocks', '持仓')
 PIC_DIR = os.path.join(HOLDINGS_DIR, 'pic')
 INDEX_FILE = os.path.join(HOLDINGS_DIR, 'index.md')
 
-MYSQL_HOST = '192.168.123.104'
+MYSQL_HOST = os.environ.get('MYSQL_HOST', '')
 MYSQL_PORT = 3306
 MYSQL_USER = 'root'
 MYSQL_DB = 'hermes'

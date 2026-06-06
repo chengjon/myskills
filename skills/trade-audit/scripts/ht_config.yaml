@@ -7,29 +7,40 @@ active_threshold: 7.0          # 单日涨幅阈值(%)
 limit_up_threshold: 9.8        # 涨停阈值(%)
 trend_days: 25                 # 强趋势回溯天数
 trend_gain: 35.0               # 强趋势涨幅阈值(%)
-top_amount_count: 50           # 成交额前N
-min_amount: 100000000          # 最低成交额(1亿)
-max_consecutive_up: 3          # 连涨天数阈值
-consecutive_up_threshold: 5.0  # 连涨每日涨幅阈值(%)
-ma_near_pct: 3.0              # 均线附近范围(%)
+amount_top: 200                # 成交额排名取前N只
 
-# 止跌信号参数
-shadow_ratio: 2.0             # 下影线/实体比
-doji_body_pct: 0.1            # 十字星实体占比
-flat_bottom_diff: 1.0         # 平底最低价差(%)
-dawn_penetration: 0.5         # 曙光初现深入比例
-dawn_prev_min_drop: 3.0       # 曙光初现前日最小跌幅(%)
-big_yin_drop: 3.0             # 大阴线最小跌幅(%)
+# 二次筛选
+min_amount: 100000000          # 最低成交额(元, 1亿)
+max_consecutive_up: 3          # 连涨≥N日且每日涨>X% → 删除
+consecutive_up_pct: 5.0        # 连涨每日涨幅阈值(%)
+max_upper_shadow: 3.0          # 上影线>实体×N倍 → 删除
+ma_near_pct: 3.0               # 均线附近±%豁免连续下跌过滤
 
-# 买入参数
-buy_time: "14:30"             # 买入时间窗口
-max_buy_pct: 3.0              # 最大允许阳线(%)
-limit_up_skip: 9.5            # 涨停板跳过(%)
-max_picks: 3                  # 最多选几只
-max_picks_below_ma5: 2        # 大盘5日线下最多选几只
+# 止跌信号
+long_lower_shadow_ratio: 2.0
+long_lower_shadow_pct: 1.5
+doji_body_pct: 0.3
+flat_bottom_diff_pct: 1.0
+flat_bottom_shrink: 0.7
+dawn_prev_min_drop: 3.0
+big_yin_drop: 3.0
 
-# 大盘参数
-index_code: "sh000001"        # 参考指数
-macd_fast: 12
-macd_slow: 26
-macd_signal: 9
+# 买入条件
+buy_score_min: 3
+small_yang_max: 3.0
+limit_up_skip: 9.5
+max_picks: 3
+ma5_reduce_picks: 2
+
+# 卖出条件
+stop_loss_pct: -2.0
+stop_loss_ma: true
+high_open_sell: 3.0
+ma5_take_profit: true
+avg_price_timeout: 15
+time_stop_hour: 14
+avg_price_break_sell: true
+
+# 大盘环境
+index_code: sh000001
+index_ma_period: 20

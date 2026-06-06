@@ -538,7 +538,7 @@ def _get_conn():
     import pymysql
     pwd = os.environ.get("MYSQL_PWD", "")
     return pymysql.connect(
-        host="192.168.123.104", port=3306, user="root",
+        host=os.environ.get("MYSQL_HOST", ""), port=3306, user="root",
         password=pwd, database="hermes", charset="utf8mb4"
     )
 
@@ -1050,7 +1050,7 @@ def batch_score_v4(limit=None, force=False):
 
     pwd = os.environ.get("MYSQL_PWD", "")
     conn = pymysql.connect(
-        host="192.168.123.104", port=3306, user="root",
+        host=os.environ.get("MYSQL_HOST", ""), port=3306, user="root",
         password=pwd, database="hermes", charset="utf8mb4"
     )
     cur = conn.cursor()

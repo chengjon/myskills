@@ -792,8 +792,9 @@ def get_stock_sw2(code, conn=None):
         own_conn = conn is None
         if own_conn:
             conn = pymysql.connect(
-                host='192.168.123.104', user='root',
-                password=os.environ.get('MYSQL_PWD', 'c790414J'),
+                host=os.environ.get('MYSQL_HOST', ''),
+                user='root',
+                password=os.environ.get('MYSQL_PWD', ''),
                 database='mystocks', connect_timeout=5, read_timeout=5
             )
         cur = conn.cursor()
@@ -882,8 +883,9 @@ def get_stock_universe(tdx_client):
     try:
         import pymysql
         conn = pymysql.connect(
-            host='192.168.123.104', user='root',
-            password=os.environ.get('MYSQL_PWD', 'c790414J'),
+            host=os.environ.get('MYSQL_HOST', ''),
+            user='root',
+            password=os.environ.get('MYSQL_PWD', ''),
             database='tdx_data', connect_timeout=10, read_timeout=30
         )
         cur = conn.cursor()

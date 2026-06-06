@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 
 conn = pymysql.connect(
-    host='192.168.123.104', port=3306, user='root',
+    host=os.environ.get('MYSQL_HOST', ''), port=3306, user='root',
     password=os.environ.get('MYSQL_PWD', ''), database='hermes', charset='utf8mb4'
 )
 cur = conn.cursor()

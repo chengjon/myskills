@@ -277,7 +277,7 @@ accounts:
 # MySQL
 # ============================================================
 mysql:
-  host: "192.168.123.104"
+  host: "${MYSQL_HOST}"
   port: 3306
   user: "root"
   password: ""                  # 从环境变量 MYSQL_PWD 读取

@@ -37,7 +37,7 @@ import pymysql
 
 # ── 配置 ──────────────────────────────────────────────
 TDX_BASE_DIR = "/mnt/d/mystocks/tdx/vipdoc_merged"
-MYSQL_HOST = "192.168.123.104"
+MYSQL_HOST = os.environ.get("MYSQL_HOST", "")
 MYSQL_PORT = 3306
 MYSQL_USER = "root"
 MYSQL_DB = "tdx_data"

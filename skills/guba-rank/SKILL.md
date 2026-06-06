@@ -62,7 +62,7 @@ cd /opt/claude/Scrapling && .venv/bin/python ~/.hermes/skills/mystock-analysis/s
 | guba_surge_rank | 飙升榜 | 同上 |
 | guba_index_picks | 均线筛选 | fetch_time, code, name, price, change_pct, ma5, ma20, dist_ma5_pct, dist_ma20_pct, source |
 
-MySQL连接: `192.168.123.104:3306/hermes`
+MySQL连接: `${MYSQL_HOST}:3306/hermes`
 
 ## 报告格式规范
 

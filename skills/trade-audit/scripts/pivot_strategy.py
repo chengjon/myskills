@@ -23,7 +23,7 @@ import pymysql
 
 # ─── 配置 ──────────────────────────────────────────────────
 
-MYSQL_HOST = '192.168.123.104'
+MYSQL_HOST = os.environ.get('MYSQL_HOST', '')
 MYSQL_PORT = 3306
 MYSQL_USER = 'root'
 MYSQL_DB = 'hermes'

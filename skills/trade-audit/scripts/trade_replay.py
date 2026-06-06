@@ -19,7 +19,7 @@
 
 依赖:
   - TDXClient: ~/.hermes/skills/trade-audit/scripts/tdx_client.py
-  - TDX API: http://192.168.123.104:8089 (NAS Docker)
+  - TDX API: os.environ.get("TDX_API_URL", "") (NAS Docker)
   - Python 3.8+, 无额外依赖
 
 数据格式:

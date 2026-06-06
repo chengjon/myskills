@@ -23,7 +23,7 @@ CREATE DATABASE IF NOT EXISTS tdx_data;
 -- 日期范围: 2000-02-14 ~ 2026-06-04
 ```
 
-连接: `mysql -h 192.168.123.104 -u root -P 3306 tdx_data`
+连接: `mysql -h $MYSQL_HOST -u root -P 3306 tdx_data`
 
 ## 导入脚本
 

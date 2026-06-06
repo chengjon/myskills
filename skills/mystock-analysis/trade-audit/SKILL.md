@@ -22,7 +22,7 @@ dependency:
 
 ## 前置条件
 
-- MySQL: `192.168.123.104:3306/hermes`（环境变量 MYSQL_PWD）
+- MySQL: `${MYSQL_HOST}:3306/hermes`（环境变量 MYSQL_PWD）
 - 平安交易表: `pingan_normal_trade` / `pingan_margin_trade`
 - 腾讯K线API可用（WSL下新浪被封，腾讯为fallback）
 - venv选择: 路径分析+15分分析需numpy → `/root/.hermes/hermes-agent/venv`; 仅pymysql → `/opt/claude/Scrapling/.venv`

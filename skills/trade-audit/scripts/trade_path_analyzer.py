@@ -51,7 +51,7 @@ def _load_mysql_config() -> dict:
     mysql_cfg = cfg.get("mysql", {})
     env_pwd = os.environ.get("MYSQL_PWD", "")
     return {
-        "host": mysql_cfg.get("host", "192.168.123.104"),
+        "host": mysql_cfg.get("host", os.environ.get("MYSQL_HOST", "")),
         "port": mysql_cfg.get("port", 3306),
         "user": mysql_cfg.get("user", "root"),
         "password": env_pwd or mysql_cfg.get("password", ""),

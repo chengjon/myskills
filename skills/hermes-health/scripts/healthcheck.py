@@ -271,7 +271,40 @@ def run_check(provider_filter: str | None = None) -> list[dict]:
             results.append({"check": "Log: 超时伪装截断", "status": "warn",
                             "detail": f"最近日志中有 {stub_count} 次 length-truncated stub — 这是超时断流，不是真 token 超限"})
 
-    # ── 8. Auxiliary compression provider ──
+    # ── 8. Provider base_url consistency ──
+    config_base_url = model_cfg.get("base_url")
+    plugin_base_url = None
+    provider_plugin_path = get_hermes_home() / "hermes-agent" / "plugins" / "model-providers" / provider / "__init__.py"
+    if provider_plugin_path.exists():
+        try:
+            with open(provider_plugin_path) as pf:
+                for pline in pf:
+                    m = re.search(r'base_url\s*=\s*["\']([^"\']+)["\']', pline)
+                    if m:
+                        plugin_base_url = m.group(1)
+                        break
+        except Exception:
+            pass
+
+    if config_base_url and plugin_base_url:
+        if config_base_url.rstrip("/") == plugin_base_url.rstrip("/"):
+            results.append({"check": "Provider base_url 一致性", "status": "ok",
+                            "detail": f"config 和插件均为 {config_base_url}"})
+        else:
+            results.append({"check": "Provider base_url 一致性", "status": "warn",
+                            "detail": f"config={config_base_url} vs 插件={plugin_base_url} — config 优先但易混淆",
+                            "fix": f"统一插件默认值: 编辑 {provider_plugin_path} 将 base_url 改为 {config_base_url}"})
+    elif config_base_url and not plugin_base_url:
+        results.append({"check": "Provider base_url 一致性", "status": "ok",
+                        "detail": f"config 设置 base_url={config_base_url}，插件无默认值"})
+    elif not config_base_url and plugin_base_url:
+        results.append({"check": "Provider base_url 一致性", "status": "info",
+                        "detail": f"config 未设 base_url，使用插件默认值 {plugin_base_url}"})
+    else:
+        results.append({"check": "Provider base_url 一致性", "status": "warn",
+                        "detail": "config 和插件均未设置 base_url — 可能回退到 httpx 默认行为"})
+
+    # ── 9. Auxiliary compression provider ──
     aux = config.get("auxiliary", {}) or {}
     aux_comp = aux.get("compression", {}) or {}
     aux_comp_provider = aux_comp.get("provider")
@@ -282,11 +315,10 @@ def run_check(provider_filter: str | None = None) -> list[dict]:
         results.append({"check": "Auxiliary compression provider", "status": "info",
                         "detail": "provider = auto (同主模型) — 主模型超时时压缩也会超时"})
 
-    # ── 9. Gateway config hot-reload check ──
+    # ── 10. Gateway config hot-reload check ──
     config_path = get_hermes_home() / "config.yaml"
     if config_path.exists():
         config_mtime = config_path.stat().st_mtime
-        # Find gateway process
         import subprocess
         try:
             gw_pids = subprocess.check_output(
@@ -310,12 +342,11 @@ def run_check(provider_filter: str | None = None) -> list[dict]:
             results.append({"check": "Gateway 配置热加载", "status": "info",
                             "detail": "无法检测 gateway 进程"})
 
-    # ── 10. ReadTimeout elapsed aggregation ──
+    # ── 11. ReadTimeout elapsed aggregation ──
     read_timeouts = [e for e in log_errors if e.get("error_type") == "ReadTimeout" and "elapsed_s" in e]
     if len(read_timeouts) >= 3:
         elapsed_vals = [e["elapsed_s"] for e in read_timeouts]
         avg_elapsed = sum(elapsed_vals) / len(elapsed_vals)
-        # Detect clustering around 120s (default) vs configured value
         clustered_at_120 = sum(1 for v in elapsed_vals if 115 <= v <= 140) / len(elapsed_vals)
         if clustered_at_120 > 0.5:
             results.append({"check": "ReadTimeout elapsed 聚合", "status": "fail",
@@ -326,7 +357,7 @@ def run_check(provider_filter: str | None = None) -> list[dict]:
             results.append({"check": "ReadTimeout elapsed 聚合", "status": "warn",
                             "detail": f"{len(read_timeouts)} 次 ReadTimeout，平均 elapsed={avg_elapsed:.0f}s"})
 
-    # ── 11. stale_stream_kill check ──
+    # ── 12. stale_stream_kill check ──
     stale_kills = [e for e in log_errors if "stale_stream_kill" in e.get("raw", "")]
     if len(stale_kills) >= 2:
         results.append({"check": "stale_stream_kill 误杀", "status": "warn",
@@ -394,7 +425,6 @@ def main():
     report = format_report(results, show_fix=args.fix)
     print(report)
 
-    # Exit code: 1 if any fail, 0 otherwise
     has_fail = any(r["status"] == "fail" for r in results)
     sys.exit(1 if has_fail else 0)
 

@@ -19,10 +19,10 @@ DATA_DIR = "/mnt/d/MyCode3/1000w/data/pinan/"
 OB_DIR = "/mnt/c/Users/John Cheng/Documents/Obsidian Vault/mystocks/历史交易/"
 
 MYSQL_CONFIG = {
-    "host": "192.168.123.104",
+    "host": os.environ.get("MYSQL_HOST", ""),
     "port": 3306,
     "user": "root",
-    "password": "c790414J",
+    "password": "",
     "database": "hermes",
     "charset": "utf8mb4",
 }

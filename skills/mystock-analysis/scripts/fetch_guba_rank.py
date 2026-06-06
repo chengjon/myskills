@@ -39,11 +39,11 @@ OBSIDIAN_VAULT = os.environ.get(
 )
 MARKET_DIR = os.path.join(OBSIDIAN_VAULT, "mystocks", "市场行情")
 
-MYSQL_HOST = "192.168.123.104"
+MYSQL_HOST = os.environ.get("MYSQL_HOST", "")
 MYSQL_PORT = 3306
 MYSQL_USER = "root"
 MYSQL_DB = "hermes"
-MYSQL_PWD = os.environ.get("MYSQL_PWD", "c790414J")
+MYSQL_PWD = os.environ.get("MYSQL_PWD", "")
 
 PAGES = 5  # 每个榜单翻5页
 PER_PAGE = 20
