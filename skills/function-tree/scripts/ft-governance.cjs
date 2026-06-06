@@ -672,6 +672,9 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
   const depRows = info.dependencyEntries && info.dependencyEntries.length
     ? info.dependencyEntries.map((entry) => `| \`${entry.name}\` | ${escapeCell(entry.category)} | 已登记 | ${escapeCell(entry.evidence)} |`)
     : [];
+  const optionalDepGroups = info.optionalDeps && info.optionalDeps.length
+    ? info.optionalDeps.map((entry) => `| \`${escapeCell(entry.group)}\` | optional dep group | 已登记 | ${entry.deps.slice(0, 6).map((d) => '`' + d + '`').join(', ')}${entry.deps.length > 6 ? ', ...' : ''} (evidence: \`${entry.evidence}\`) |`)
+    : [];
   const plannedRows = info.plannedCandidates.length
     ? info.plannedCandidates.map((feature) => `| ${escapeCell(feature.name)} | 待实现 | ${escapeCell(feature.evidence)} | ${escapeCell(feature.boundary || 'Auto-discovered planned/unfinished item; verify scope and owner before implementation.')} |`)
     : ['| - | 待登记 | - | Add planned/unfinished features from roadmap, TODO, or product notes. |'];
@@ -699,7 +702,8 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     '',
     '## 功能全景图',
     '',
-    `- Project: ${info.name}`,
+    `- Project: ${info.name}${info.version ? ` v${info.version}` : ''}`,
+    ...(info.languages.length ? [`- Languages: ${info.languages.map((l) => `${l.language} (${l.percentage}%)`).join(', ')}`] : []),
     ...featureLines,
     ...plannedLines,
     ...programLines,
@@ -776,6 +780,14 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
       '| Package | Category | Status | Evidence |',
       '|---------|----------|--------|----------|',
       ...depRows,
+      '',
+    ] : []),
+    ...(optionalDepGroups.length ? [
+      '### Optional Dependency Groups',
+      '',
+      '| Group | Type | Status | Contents |',
+      '|-------|------|--------|----------|',
+      ...optionalDepGroups,
       '',
     ] : []),
     '### 已设计/待实现节点',
@@ -891,6 +903,9 @@ function collectProjectInfo(root) {
     exceptionEntries: collectExceptionHierarchy(root, sourceRoots),
     configEntries: collectConfigEntries(root, sourceRoots),
     dependencyEntries: collectDependencyEntries(root),
+    languages: collectLanguageInfo(root, sourceRoots),
+    version: detectProjectVersion(root),
+    optionalDeps: collectOptionalDependencies(root),
   };
 }
 
@@ -961,6 +976,15 @@ function renderCandidateEvidenceLines(info) {
     for (const entry of info.dependencyEntries) {
       lines.push(`  - \`${entry.name}\` [${entry.category}]`);
     }
+  }
+  if (info.optionalDeps && info.optionalDeps.length) {
+    lines.push('- Auto-discovered optional dependency groups:');
+    for (const entry of info.optionalDeps) {
+      lines.push(`  - \`${entry.group}\`: ${entry.deps.slice(0, 6).join(', ')}${entry.deps.length > 6 ? ', ...' : ''} (${entry.evidence})`);
+    }
+  }
+  if (info.languages && info.languages.length) {
+    lines.push(`- Detected languages: ${info.languages.map((l) => `${l.language} (${l.percentage}%)`).join(', ')}`);
   }
   if (lines.length) lines.push('');
   return lines;
@@ -1897,24 +1921,7 @@ function collectConfigEntries(root, sourceRoots) {
 
 function collectDependencyEntries(root) {
   const deps = [];
-  const pyprojectPath = path.join(root, 'pyproject.toml');
-  if (!fs.existsSync(pyprojectPath)) return deps;
-
-  const text = readFile(pyprojectPath);
-  // Extract dependencies — can be inline in [project] section or in [project.dependencies]
-  let depContent = '';
-  // Strategy 1: Inline dependencies = [...] under [project]
-  const inlineMatch = text.match(/^dependencies\s*=\s*\[([\s\S]*?)\]/m);
-  if (inlineMatch) {
-    depContent = inlineMatch[1];
-  }
-  // Strategy 2: Separate [project.dependencies] section
-  if (!depContent) {
-    const sectionMatch = text.match(/\[project\.dependencies\]\s*\n([\s\S]*?)(?:\n\[|\n*$)/);
-    if (sectionMatch) depContent = sectionMatch[1];
-  }
-  if (!depContent) return deps;
-
+  const seen = new Set();
   const categoryMap = {
     sqlalchemy: 'database', alembic: 'database', redis: 'database', psycopg: 'database',
     numpy: 'math', scipy: 'math', pandas: 'math', scikit: 'ml', torch: 'ml',
@@ -1927,21 +1934,302 @@ function collectDependencyEntries(root) {
     colorlog: 'logging', tqdm: 'logging',
   };
 
-  for (const line of depContent.split('\n')) {
-    const m = line.match(/["']\s*([A-Za-z0-9_-]+)/);
-    if (!m) continue;
-    const name = m[1].toLowerCase();
-    let category = 'runtime';
+  function categorize(name) {
+    const lower = name.toLowerCase();
     for (const [key, cat] of Object.entries(categoryMap)) {
-      if (name.includes(key) || key.includes(name)) {
-        category = cat;
-        break;
+      if (lower.includes(key) || key.includes(lower)) return cat;
+    }
+    return 'runtime';
+  }
+
+  function pushDep(name, evidence) {
+    if (seen.has(name)) return;
+    seen.add(name);
+    deps.push({ name, category: categorize(name), evidence });
+  }
+
+  // Source 1: pyproject.toml
+  const pyprojectPath = path.join(root, 'pyproject.toml');
+  if (fs.existsSync(pyprojectPath)) {
+    const text = readFile(pyprojectPath);
+    let depContent = '';
+    const inlineMatch = text.match(/^dependencies\s*=\s*\[([\s\S]*?)\]/m);
+    if (inlineMatch) depContent = inlineMatch[1];
+    if (!depContent) {
+      const sectionMatch = text.match(/\[project\.dependencies\]\s*\n([\s\S]*?)(?:\n\[|\n*$)/);
+      if (sectionMatch) depContent = sectionMatch[1];
+    }
+    if (depContent) {
+      for (const line of depContent.split('\n')) {
+        const m = line.match(/["']\s*([A-Za-z0-9_-]+)/);
+        if (m) pushDep(m[1], 'pyproject.toml [project.dependencies]');
+        if (deps.length >= 32) break;
       }
     }
-    deps.push({ name: m[1], category, evidence: 'pyproject.toml [project.dependencies]' });
-    if (deps.length >= 32) break;
   }
+
+  // Source 2: requirements.txt
+  if (deps.length < 32) {
+    const reqPath = path.join(root, 'requirements.txt');
+    if (fs.existsSync(reqPath)) {
+      for (const line of readFile(reqPath).split('\n')) {
+        const m = line.match(/^\s*([A-Za-z0-9_-]+)/);
+        if (m && m[1].length > 1) pushDep(m[1], 'requirements.txt');
+        if (deps.length >= 32) break;
+      }
+    }
+  }
+
+  // Source 3: package.json
+  if (deps.length < 32) {
+    const pkgPath = path.join(root, 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFile(pkgPath));
+        for (const name of Object.keys(pkg.dependencies || {})) {
+          pushDep(name, 'package.json dependencies');
+          if (deps.length >= 32) break;
+        }
+      } catch (_) {}
+    }
+  }
+
+  // Source 4: Cargo.toml
+  if (deps.length < 32) {
+    const cargoPath = path.join(root, 'Cargo.toml');
+    if (fs.existsSync(cargoPath)) {
+      const text = readFile(cargoPath);
+      const sectionMatch = text.match(/\[dependencies\]\s*\n([\s\S]*?)(?:\n\[|\n*$)/);
+      if (sectionMatch) {
+        for (const line of sectionMatch[1].split('\n')) {
+          const m = line.match(/^\s*([A-Za-z0-9_-]+)\s*[=]/);
+          if (m) pushDep(m[1], 'Cargo.toml [dependencies]');
+          if (deps.length >= 32) break;
+        }
+      }
+    }
+  }
+
+  // Source 5: go.mod
+  if (deps.length < 32) {
+    const goModPath = path.join(root, 'go.mod');
+    if (fs.existsSync(goModPath)) {
+      let inRequire = false;
+      for (const line of readFile(goModPath).split('\n')) {
+        if (/^\s*require\s*\(/.test(line)) { inRequire = true; continue; }
+        if (/^\s*\)/.test(line)) { inRequire = false; continue; }
+        if (inRequire || /^\s*require\s+/.test(line)) {
+          const m = line.match(/^\s*(\S+)\s+v/);
+          if (m) {
+            const pkgName = m[1].split('/').pop();
+            if (pkgName && pkgName.length > 1) pushDep(pkgName, 'go.mod require');
+          }
+          if (deps.length >= 32) break;
+        }
+      }
+    }
+  }
+
   return deps;
+}
+
+function collectLanguageInfo(root, sourceRoots) {
+  const extCounts = new Map();
+  const dirs = sourceRoots.length ? sourceRoots : ['.'];
+  for (const dir of dirs) {
+    const absDir = path.join(root, dir);
+    if (!fs.existsSync(absDir)) continue;
+    try {
+      countExtensions(absDir, extCounts, 3);
+    } catch (_) { /* ignore */ }
+  }
+  // Map extensions to languages
+  const extToLang = {
+    '.py': 'Python', '.js': 'JavaScript', '.ts': 'TypeScript', '.tsx': 'TypeScript',
+    '.rs': 'Rust', '.go': 'Go', '.java': 'Java', '.kt': 'Kotlin', '.scala': 'Scala',
+    '.rb': 'Ruby', '.php': 'PHP', '.cs': 'C#', '.cpp': 'C++', '.c': 'C', '.h': 'C/C++',
+    '.swift': 'Swift', '.m': 'Objective-C', '.lua': 'Lua', '.r': 'R', '.R': 'R',
+  };
+  const langTotals = new Map();
+  for (const [ext, count] of extCounts) {
+    const lang = extToLang[ext];
+    if (lang) langTotals.set(lang, (langTotals.get(lang) || 0) + count);
+  }
+  // Sort by count descending
+  const sorted = [...langTotals.entries()].sort((a, b) => b[1] - a[1]);
+  if (!sorted.length) return [];
+
+  const totalFiles = sorted.reduce((s, e) => s + e[1], 0);
+  return sorted.map(([lang, count]) => ({
+    language: lang,
+    percentage: Math.round((count / totalFiles) * 100),
+    files: count,
+  }));
+}
+
+function countExtensions(dir, extCounts, maxDepth) {
+  if (maxDepth <= 0) return;
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (_) { return; }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === '__pycache__' || entry.name === '.git') continue;
+    if (entry.isDirectory()) {
+      countExtensions(path.join(dir, entry.name), extCounts, maxDepth - 1);
+    } else {
+      const ext = path.extname(entry.name);
+      if (ext) extCounts.set(ext, (extCounts.get(ext) || 0) + 1);
+    }
+  }
+}
+
+function detectProjectVersion(root) {
+  // pyproject.toml: version = "X.Y.Z" or dynamic version
+  const pyprojectPath = path.join(root, 'pyproject.toml');
+  if (fs.existsSync(pyprojectPath)) {
+    const text = readFile(pyprojectPath);
+    const v = text.match(/^\s*version\s*=\s*["']([^"']+)["']/m);
+    if (v) return v[1];
+    // Dynamic version — report that
+    const dyn = text.match(/^\s*dynamic\s*=\s*\[([^\]]*version[^\]]*)\]/m);
+    if (dyn) return 'dynamic';
+  }
+  // package.json
+  const pkgPath = path.join(root, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFile(pkgPath));
+      if (pkg.version) return pkg.version;
+    } catch (_) {}
+  }
+  // Cargo.toml
+  const cargoPath = path.join(root, 'Cargo.toml');
+  if (fs.existsSync(cargoPath)) {
+    const m = readFile(cargoPath).match(/^version\s*=\s*"([^"]+)"/m);
+    if (m) return m[1];
+  }
+  return '';
+}
+
+function collectOptionalDependencies(root) {
+  const groups = [];
+  const pyprojectPath = path.join(root, 'pyproject.toml');
+  if (fs.existsSync(pyprojectPath)) {
+    const text = readFile(pyprojectPath);
+
+    // Style 1: [project.optional-dependencies.GROUPNAME] (per-group section)
+    const sectionRegex = /\[project\.optional-dependencies\.([A-Za-z0-9_-]+)\]\s*\n([\s\S]*?)(?=\n\[|\n*$)/g;
+    let match;
+    while ((match = sectionRegex.exec(text)) !== null) {
+      const groupName = match[1];
+      const content = match[2];
+      const depNames = [];
+      for (const line of content.split('\n')) {
+        const m = line.match(/["']?\s*([A-Za-z0-9_-]+)/);
+        if (m && m[1].length > 1) depNames.push(m[1]);
+      }
+      if (depNames.length) {
+        groups.push({ group: groupName, deps: depNames.slice(0, 12), evidence: 'pyproject.toml' });
+      }
+      if (groups.length >= 16) break;
+    }
+
+    // Style 2: [project.optional-dependencies] with inline name = [...] entries
+    if (groups.length < 16) {
+      const baseSection = text.match(/\[project\.optional-dependencies\]\s*\n([\s\S]*?)(?=\n\[|\n*$)/);
+      if (baseSection) {
+        const sectionText = baseSection[1];
+        let currentGroup = '';
+        let currentDeps = [];
+        for (const line of sectionText.split('\n')) {
+          // Group header: groupname = [
+          const groupMatch = line.match(/^([A-Za-z0-9_-]+)\s*=\s*\[/);
+          if (groupMatch) {
+            // Flush previous group
+            if (currentGroup && currentDeps.length) {
+              groups.push({ group: currentGroup, deps: currentDeps.slice(0, 12), evidence: 'pyproject.toml' });
+            }
+            currentGroup = groupMatch[1];
+            currentDeps = [];
+            // Collect deps on this line and subsequent lines until ]
+            const rest = line.slice(line.indexOf('[') + 1);
+            collectInlineDeps(rest, currentDeps);
+            if (rest.includes(']')) {
+              if (currentDeps.length) groups.push({ group: currentGroup, deps: currentDeps.slice(0, 12), evidence: 'pyproject.toml' });
+              currentGroup = '';
+              currentDeps = [];
+            }
+            continue;
+          }
+          // Continuation lines
+          if (currentGroup) {
+            collectInlineDeps(line, currentDeps);
+            if (line.includes(']')) {
+              if (currentDeps.length) groups.push({ group: currentGroup, deps: currentDeps.slice(0, 12), evidence: 'pyproject.toml' });
+              currentGroup = '';
+              currentDeps = [];
+            }
+          }
+          if (groups.length >= 16) break;
+        }
+        // Flush last group
+        if (currentGroup && currentDeps.length) {
+          groups.push({ group: currentGroup, deps: currentDeps.slice(0, 12), evidence: 'pyproject.toml' });
+        }
+      }
+    }
+  }
+  // requirements-*.txt
+  try {
+    for (const entry of fs.readdirSync(root)) {
+      const reqMatch = entry.match(/^requirements[-.]([A-Za-z0-9_-]+)\.txt$/);
+      if (reqMatch) {
+        const groupName = reqMatch[1];
+        const content = readFile(path.join(root, entry));
+        const depNames = [];
+        for (const line of content.split('\n')) {
+          const m = line.match(/^\s*([A-Za-z0-9_-]+)/);
+          if (m && m[1].length > 1) depNames.push(m[1]);
+        }
+        if (depNames.length) {
+          groups.push({ group: groupName, deps: depNames.slice(0, 12), evidence: entry });
+        }
+        if (groups.length >= 16) break;
+      }
+    }
+  } catch (_) {}
+  // package.json optionalDependencies
+  const pkgPath = path.join(root, 'package.json');
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFile(pkgPath));
+      for (const section of ['optionalDependencies', 'devDependencies']) {
+        const deps = pkg[section];
+        if (deps && typeof deps === 'object') {
+          const names = Object.keys(deps);
+          if (names.length) {
+            groups.push({ group: section, deps: names.slice(0, 12), evidence: 'package.json' });
+          }
+        }
+      }
+    } catch (_) {}
+  }
+  return groups;
+}
+
+function collectInlineDeps(line, deps) {
+  const re = /["']([A-Za-z0-9_-]+(?:\[.*?\])?)\s*(?:[><=!]+|;|@)/g;
+  let m;
+  while ((m = re.exec(line)) !== null) {
+    const name = m[1].replace(/\[.*\]/, '');
+    if (name.length > 1 && !deps.includes(name)) deps.push(name);
+  }
+  // Also match simple quoted names without version spec
+  const simpleRe = /["']([A-Za-z0-9_-]+)["']/g;
+  while ((m = simpleRe.exec(line)) !== null) {
+    if (m[1].length > 1 && !deps.includes(m[1])) deps.push(m[1]);
+  }
 }
 
 function collectDocCommandExamples(root) {
