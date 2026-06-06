@@ -638,7 +638,9 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     ? info.featureCandidates.map((feature) => `| ${escapeCell(feature.name)} | ${escapeCell(feature.type)} | ${escapeCell(feature.status)} | ${escapeCell(feature.evidence)}; ${escapeCell(feature.boundary)} |`)
     : ['| - | feature candidate | 待登记 | Add README/API/product feature bullets, then rerun `doc`. |'];
   const moduleRows = info.sourceModules.length
-    ? info.sourceModules.map((module) => `| \`${module.path}\` | module | 待核验 | Auto-discovered source module; map to a capability node after review. |`)
+    ? info.sourceModules.map((module) => module.fileCount
+      ? `| \`${module.path}\` | module dir | 待核验 | ${module.fileCount} source files; map to capability nodes after review. |`
+      : `| \`${module.path}\` | module | 待核验 | Auto-discovered source module; map to a capability node after review. |`)
     : [];
   const sourceRows = info.sourceRoots.length
     ? info.sourceRoots.map((source) => `| \`${source}\` | source root | 待登记 | Map modules under this root into capability nodes. |`)
@@ -1174,7 +1176,12 @@ function collectSourceTodoCandidates(root, sourceRoots) {
     const text = readFile(path.join(root, file));
     const lines = text.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
-      const match = lines[index].match(/\b(?:TODO|FIXME|XXX|HACK)\b[:\-\s]*(.+)$/i);
+      const line = lines[index];
+      // Only match TODOs in comment context to avoid string literal false positives
+      const isCommentContext = /^\s*(#|\/\/|\/\*|<!--|;\s*|%\s*)/.test(line) ||
+        /(?:#\s*|\/\/\s*|\/\*\s*|<!--\s*|;\s*|%\s*)(?:TODO|FIXME|XXX|HACK)\b/i.test(line);
+      if (!isCommentContext) continue;
+      const match = line.match(/\b(?:TODO|FIXME|XXX|HACK)\b[:\-\s]*(.+)$/i);
       if (!match) continue;
       const name = cleanMarkdownText(match[1]);
       if (!isUsefulCandidateName(name)) continue;
@@ -1531,13 +1538,31 @@ function collectSourceModules(root, sourceRoots) {
     if (!fs.existsSync(absoluteRoot) || !fs.statSync(absoluteRoot).isDirectory()) continue;
     for (const entry of fs.readdirSync(absoluteRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       if (entry.name.startsWith('.') || ignored.has(entry.name)) continue;
-      if (!entry.isDirectory() && !/\.(js|jsx|ts|tsx|py|go|rs|java|kt|swift|rb|php|cs|c|cc|cpp|h|hpp)$/i.test(entry.name)) continue;
+      const isSource = entry.isDirectory() || /\.(js|jsx|ts|tsx|py|go|rs|java|kt|swift|rb|php|cs|c|cc|cpp|h|hpp)$/i.test(entry.name);
+      if (!isSource) continue;
       const relativePath = `${sourceRoot}/${entry.name}${entry.isDirectory() ? '/' : ''}`;
       modules.push({ path: relativePath });
-      if (modules.length >= 48) return modules;
+      if (modules.length >= 48) break;
+    }
+    if (modules.length >= 48) break;
+  }
+  // Aggregate lone files under same directory into one entry
+  const aggregated = [];
+  const byDir = {};
+  for (const mod of modules) {
+    if (mod.path.endsWith('/')) { aggregated.push(mod); continue; }
+    const dir = mod.path.replace(/\/[^/]+$/, '/');
+    if (!byDir[dir]) byDir[dir] = [];
+    byDir[dir].push(mod.path);
+  }
+  for (const [dir, files] of Object.entries(byDir)) {
+    if (files.length <= 2) {
+      for (const f of files) aggregated.push({ path: f });
+    } else {
+      aggregated.push({ path: dir, fileCount: files.length });
     }
   }
-  return modules;
+  return aggregated;
 }
 
 function collectPublicApiEntries(root, sourceRoots) {
