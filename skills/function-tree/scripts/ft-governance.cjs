@@ -655,8 +655,23 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
   const apiRows = info.apiEntries.length
     ? info.apiEntries.map((entry) => `| \`${entry.method} ${entry.path}\` | ${escapeCell(entry.source)} | 待核验 | Evidence: \`${entry.evidence}\` |`)
     : ['| - | API route | 待登记 | Add OpenAPI specs or route definitions to register service/API entrypoints. |'];
+  const publicApiRows = info.publicApiEntries && info.publicApiEntries.length
+    ? info.publicApiEntries.map((entry) => `| \`${entry.module}\` | public API | 已登记 | ${entry.count} exports: ${entry.exports.slice(0, 8).join(', ')}${entry.count > 8 ? ', ...' : ''} (evidence: \`${entry.evidence}\`) |`)
+    : ['| - | public API | 待登记 | Python packages with `__all__` or JS modules with named exports will be detected. |'];
+  const docSystemRows = info.docSystemInfo && info.docSystemInfo.length
+    ? info.docSystemInfo.map((entry) => `| ${escapeCell(entry.system)} | doc system | 已登记 | ${escapeCell(entry.detail)} (evidence: \`${entry.evidence}\`) |`)
+    : ['| - | doc system | 待登记 | Sphinx, MkDocs, Docusaurus, and other doc systems will be auto-detected. |'];
+  const exceptionRows = info.exceptionEntries && info.exceptionEntries.length
+    ? info.exceptionEntries.map((entry) => `| \`${entry.name}\` | exception | 已登记 | extends \`${entry.parent}\`; source: \`${entry.module}\` |`)
+    : [];
+  const configRows = info.configEntries && info.configEntries.length
+    ? info.configEntries.map((entry) => `| \`${entry.evidence}\` | ${escapeCell(entry.type)} | 已登记 | ${escapeCell(entry.detail)} |`)
+    : [];
+  const depRows = info.dependencyEntries && info.dependencyEntries.length
+    ? info.dependencyEntries.map((entry) => `| \`${entry.name}\` | ${escapeCell(entry.category)} | 已登记 | ${escapeCell(entry.evidence)} |`)
+    : [];
   const plannedRows = info.plannedCandidates.length
-    ? info.plannedCandidates.map((feature) => `| ${escapeCell(feature.name)} | 待实现 | ${escapeCell(feature.evidence)} | Auto-discovered planned/unfinished item; verify scope and owner before implementation. |`)
+    ? info.plannedCandidates.map((feature) => `| ${escapeCell(feature.name)} | 待实现 | ${escapeCell(feature.evidence)} | ${escapeCell(feature.boundary || 'Auto-discovered planned/unfinished item; verify scope and owner before implementation.')} |`)
     : ['| - | 待登记 | - | Add planned/unfinished features from roadmap, TODO, or product notes. |'];
   const programLines = programs.length
     ? programs.map((program) => `- Governance: ${program.name} (${program.ref || 'unmapped'}): ${program.description || 'governance program'}`)
@@ -665,7 +680,7 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     ? info.featureCandidates.flatMap(renderFeatureOverviewLines)
     : ['- Existing feature candidates: 待登记'];
   const plannedLines = info.plannedCandidates.length
-    ? info.plannedCandidates.map((feature) => `- Planned/unfinished: ${feature.name} (${feature.evidence})`)
+    ? info.plannedCandidates.map((feature) => `- Planned/unfinished: ${feature.name} [${feature.type || 'planned'}] (${feature.evidence})`)
     : ['- Planned/unfinished: 待登记'];
   const programTable = programRows.map((row) => `| ${row.map(escapeCell).join(' | ')} |`);
 
@@ -725,6 +740,42 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     '|----------|--------|--------|-------|',
     ...apiRows,
     '',
+    '### Public API Surface (__all__ exports)',
+    '',
+    '| Module | Type | Status | Exports / Notes |',
+    '|--------|------|--------|-----------------|',
+    ...publicApiRows,
+    '',
+    '### Documentation System',
+    '',
+    '| System | Type | Status | Notes |',
+    '|--------|------|--------|-------|',
+    ...docSystemRows,
+    '',
+    ...(exceptionRows.length ? [
+      '### Exception Hierarchy',
+      '',
+      '| Exception | Type | Status | Notes |',
+      '|-----------|------|--------|-------|',
+      ...exceptionRows,
+      '',
+    ] : []),
+    ...(configRows.length ? [
+      '### Configuration & Environment',
+      '',
+      '| Entry | Type | Status | Notes |',
+      '|-------|------|--------|-------|',
+      ...configRows,
+      '',
+    ] : []),
+    ...(depRows.length ? [
+      '### Core Dependencies',
+      '',
+      '| Package | Category | Status | Evidence |',
+      '|---------|----------|--------|----------|',
+      ...depRows,
+      '',
+    ] : []),
     '### 已设计/待实现节点',
     '',
     '| 功能节点 | 状态 | 证据 | 边界 |',
@@ -791,6 +842,9 @@ function collectProjectInfo(root) {
     'tests',
     'test',
   ]);
+  for (const pkgRoot of detectPythonPackageRoots(root)) {
+    if (!sourceRoots.includes(pkgRoot)) sourceRoots.push(pkgRoot);
+  }
   const manifests = existingPaths(root, [
     'package.json',
     'pyproject.toml',
@@ -826,10 +880,15 @@ function collectProjectInfo(root) {
     sourceRoots,
     featureCandidates,
     plannedCandidates: collectPlannedFeatureCandidates(root, sourceRoots),
+    publicApiEntries: collectPublicApiEntries(root, sourceRoots),
     sourceModules: collectSourceModules(root, sourceRoots),
     commandEntries,
     uiEntries,
     apiEntries,
+    docSystemInfo: collectDocSystemInfo(root),
+    exceptionEntries: collectExceptionHierarchy(root, sourceRoots),
+    configEntries: collectConfigEntries(root, sourceRoots),
+    dependencyEntries: collectDependencyEntries(root),
   };
 }
 
@@ -869,6 +928,36 @@ function renderCandidateEvidenceLines(info) {
     lines.push('- Auto-discovered API/service routes:');
     for (const entry of info.apiEntries) {
       lines.push(`  - \`${entry.method} ${entry.path}\`: ${entry.evidence}`);
+    }
+  }
+  if (info.publicApiEntries && info.publicApiEntries.length) {
+    lines.push('- Auto-discovered public API (__all__ exports):');
+    for (const entry of info.publicApiEntries) {
+      lines.push(`  - \`${entry.module}\`: ${entry.count} exports (${entry.exports.slice(0, 5).join(', ')}${entry.count > 5 ? ', ...' : ''})`);
+    }
+  }
+  if (info.docSystemInfo && info.docSystemInfo.length) {
+    lines.push('- Auto-discovered documentation systems:');
+    for (const entry of info.docSystemInfo) {
+      lines.push(`  - ${entry.system}: ${entry.evidence} (${entry.detail})`);
+    }
+  }
+  if (info.exceptionEntries && info.exceptionEntries.length) {
+    lines.push('- Auto-discovered exception hierarchy:');
+    for (const entry of info.exceptionEntries) {
+      lines.push(`  - \`${entry.name}\` extends \`${entry.parent}\` (source: \`${entry.module}\`)`);
+    }
+  }
+  if (info.configEntries && info.configEntries.length) {
+    lines.push('- Auto-discovered configuration/environment:');
+    for (const entry of info.configEntries) {
+      lines.push(`  - [${entry.type}] \`${entry.evidence}\`: ${entry.detail}`);
+    }
+  }
+  if (info.dependencyEntries && info.dependencyEntries.length) {
+    lines.push('- Auto-discovered core dependencies:');
+    for (const entry of info.dependencyEntries) {
+      lines.push(`  - \`${entry.name}\` [${entry.category}]`);
     }
   }
   if (lines.length) lines.push('');
@@ -1080,7 +1169,8 @@ function uniqueCandidates(candidates, limit) {
 
 function collectSourceTodoCandidates(root, sourceRoots) {
   const candidates = [];
-  for (const file of collectSourceFiles(root, sourceRoots, 240)) {
+  for (const file of collectSourceFiles(root, sourceRoots, 600)) {
+    const isTestFile = /(^|[\/\\])(tests?|spec|__tests__|test_)[\/\\]/i.test(file) || /[_-]test[_\.]|[_\.]spec[_\.]|[_\.]test[_\.]/i.test(file);
     const text = readFile(path.join(root, file));
     const lines = text.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
@@ -1088,14 +1178,24 @@ function collectSourceTodoCandidates(root, sourceRoots) {
       if (!match) continue;
       const name = cleanMarkdownText(match[1]);
       if (!isUsefulCandidateName(name)) continue;
-      candidates.push({
-        name,
-        type: 'planned feature',
-        status: '待实现',
-        evidence: `${file}:${index + 1}`,
-        boundary: 'Source TODO; verify intent, owner, and priority before implementation.',
-      });
-      if (candidates.length >= 24) return candidates;
+      if (isTestFile) {
+        candidates.push({
+          name,
+          type: 'test improvement',
+          status: '待实现',
+          evidence: `${file}:${index + 1}`,
+          boundary: 'Test improvement TODO; not a product roadmap item. Verify scope before implementation.',
+        });
+      } else {
+        candidates.push({
+          name,
+          type: 'source TODO',
+          status: '待实现',
+          evidence: `${file}:${index + 1}`,
+          boundary: 'Source code TODO; verify intent, owner, and priority before implementation.',
+        });
+      }
+      if (candidates.length >= 48) return candidates;
     }
   }
   return candidates;
@@ -1208,7 +1308,7 @@ function isPathlessUiSegment(part) {
 
 function collectNavigationUiEntries(root, sourceRoots) {
   const entries = [];
-  for (const file of collectSourceFiles(root, sourceRoots, 400)) {
+  for (const file of collectSourceFiles(root, sourceRoots, 600)) {
     if (!isNavigationUiFile(file)) continue;
     const lines = readFile(path.join(root, file)).split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
@@ -1434,10 +1534,34 @@ function collectSourceModules(root, sourceRoots) {
       if (!entry.isDirectory() && !/\.(js|jsx|ts|tsx|py|go|rs|java|kt|swift|rb|php|cs|c|cc|cpp|h|hpp)$/i.test(entry.name)) continue;
       const relativePath = `${sourceRoot}/${entry.name}${entry.isDirectory() ? '/' : ''}`;
       modules.push({ path: relativePath });
-      if (modules.length >= 24) return modules;
+      if (modules.length >= 48) return modules;
     }
   }
   return modules;
+}
+
+function collectPublicApiEntries(root, sourceRoots) {
+  const entries = [];
+  const dunderAllPattern = /^__all__\s*=\s*\[([\s\S]*?)\]/m;
+  for (const file of collectSourceFiles(root, sourceRoots, 600)) {
+    if (!file.endsWith('__init__.py')) continue;
+    const text = readFile(path.join(root, file));
+    const match = text.match(dunderAllPattern);
+    if (!match) continue;
+    const names = match[1]
+      .split(/,\s*/)
+      .map((item) => item.trim().replace(/^["']|["']$/g, ''))
+      .filter((name) => name && !name.startsWith('_'));
+    if (!names.length) continue;
+    entries.push({
+      module: file.replace(/\/__init__\.py$/, '').replace(/\\/g, '/'),
+      exports: names,
+      count: names.length,
+      evidence: file,
+    });
+    if (entries.length >= 32) break;
+  }
+  return entries;
 }
 
 function collectCommandEntries(root) {
@@ -1454,7 +1578,7 @@ function collectCommandEntries(root) {
       const scripts = pkg && pkg.scripts && typeof pkg.scripts === 'object' ? pkg.scripts : {};
       for (const name of Object.keys(scripts).sort()) {
         pushCommand(`npm run ${name}`, String(scripts[name] || '').slice(0, 80) || 'package script', 'package.json scripts');
-        if (commands.length >= 16) return commands;
+        if (commands.length >= 32) return commands;
       }
     } catch (_) {
       // Invalid package metadata should not block FUNCTION_TREE generation.
@@ -1471,7 +1595,7 @@ function collectCommandEntries(root) {
     }
     for (const name of parseTomlSectionNames(cargo, 'bin')) {
       pushCommand(`cargo run --bin ${name}`, `run Rust binary ${name}`, 'Cargo.toml [[bin]]');
-      if (commands.length >= 16) return commands;
+      if (commands.length >= 32) return commands;
     }
   }
 
@@ -1483,7 +1607,7 @@ function collectCommandEntries(root) {
     }
     for (const name of parseTomlTableKeys(pyproject, ['project.scripts', 'tool.poetry.scripts'])) {
       pushCommand(name, `run Python entrypoint ${name}`, 'pyproject.toml scripts');
-      if (commands.length >= 16) return commands;
+      if (commands.length >= 32) return commands;
     }
   }
 
@@ -1497,25 +1621,302 @@ function collectCommandEntries(root) {
 
   for (const target of collectMakeTargets(root)) {
     pushCommand(`make ${target}`, `run Makefile target ${target}`, 'Makefile');
-    if (commands.length >= 16) return commands;
+    if (commands.length >= 32) return commands;
   }
 
   for (const recipe of collectJustRecipes(root)) {
     pushCommand(`just ${recipe}`, `run Justfile recipe ${recipe}`, 'Justfile');
-    if (commands.length >= 16) return commands;
+    if (commands.length >= 32) return commands;
   }
 
   for (const task of collectTaskfileTasks(root)) {
     pushCommand(`task ${task}`, `run Taskfile task ${task}`, 'Taskfile');
-    if (commands.length >= 16) return commands;
+    if (commands.length >= 32) return commands;
   }
 
   for (const command of collectDocCommandExamples(root)) {
     pushCommand(command.command, 'documented command example', command.evidence);
-    if (commands.length >= 16) return commands;
+    if (commands.length >= 48) return commands;
+  }
+
+  // Python CLI subcommand detection
+  for (const sub of collectPythonCliSubcommands(root)) {
+    pushCommand(sub.command, sub.purpose, sub.evidence);
+    if (commands.length >= 48) return commands;
   }
 
   return commands;
+}
+
+function collectPythonCliSubcommands(root) {
+  const subcommands = [];
+  const pyprojectPath = path.join(root, 'pyproject.toml');
+  if (!fs.existsSync(pyprojectPath)) return subcommands;
+
+  const pyproject = readFile(pyprojectPath);
+
+  // Parse [project.scripts] entries: "optuna = "optuna.cli:main"
+  const scriptEntries = parseTomlTableKeys(pyproject, ['project.scripts', 'tool.poetry.scripts']);
+  const entryMap = {};
+  for (const key of scriptEntries) {
+    // Extract value after the key
+    const valueMatch = pyproject.match(new RegExp(`${escapeRegExp(key)}\\s*=\\s*["']([^"']+)["']`));
+    if (valueMatch) entryMap[key] = valueMatch[1];
+  }
+
+  for (const [cliName, entryPoint] of Object.entries(entryMap)) {
+    // entryPoint format: "module.path:function"
+    const match = entryPoint.match(/^([\w.]+):(\w+)$/);
+    if (!match) continue;
+    const modulePath = match[1].replace(/\./g, '/');
+
+    // Try to find the CLI source file
+    const candidates = [
+      path.join(root, modulePath + '.py'),
+    ];
+    // Also check inside source roots
+    for (const srcRoot of existingPaths(root, ['src', 'app', 'lib'])) {
+      candidates.push(path.join(root, srcRoot, modulePath + '.py'));
+    }
+
+    let cliSource = '';
+    let cliFile = '';
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        cliSource = readFile(candidate);
+        cliFile = candidate;
+        break;
+      }
+    }
+    if (!cliSource) continue;
+
+    // Strategy 1: Detect argparse subcommands via _COMMANDS-style dict
+    // Pattern: _COMMANDS = { "cmd1": ..., "cmd2": ..., ... }
+    // Use a brace-depth-aware match to handle type annotations like dict[str, type[...]]
+    const commandsDictMatch = matchBracedDict(cliSource, '_COMMANDS');
+    if (commandsDictMatch) {
+      const cmdNames = commandsDictMatch.match(/["']([^"']+)["']\s*:/g);
+      if (cmdNames) {
+        for (const cmd of cmdNames) {
+          const name = cmd.match(/["']([^"']+)["']/)[1];
+          subcommands.push({
+            command: `${cliName} ${name}`,
+            purpose: `CLI subcommand: ${name}`,
+            evidence: `${path.relative(root, cliFile)} _COMMANDS`,
+          });
+          if (subcommands.length >= 32) return subcommands;
+        }
+      }
+    }
+
+    // Strategy 2: Detect add_parser("subcommand-name") calls
+    const addParserMatches = cliSource.matchAll(/\.add_parser\s*\(\s*["']([^"']+)["']/g);
+    for (const m of addParserMatches) {
+      const name = m[1];
+      if (name === 'help') continue;
+      if (subcommands.some((s) => s.command === `${cliName} ${name}`)) continue;
+      subcommands.push({
+        command: `${cliName} ${name}`,
+        purpose: `CLI subcommand: ${name}`,
+        evidence: `${path.relative(root, cliFile)} add_parser`,
+      });
+      if (subcommands.length >= 32) return subcommands;
+    }
+
+    // Strategy 3: Detect click @command / @group decorators
+    const clickCmdMatches = cliSource.matchAll(/@(?:cli\.)?command\s*\(\s*["']([^"']+)["']/g);
+    for (const m of clickCmdMatches) {
+      const name = m[1];
+      if (subcommands.some((s) => s.command === `${cliName} ${name}`)) continue;
+      subcommands.push({
+        command: `${cliName} ${name}`,
+        purpose: `CLI subcommand: ${name}`,
+        evidence: `${path.relative(root, cliFile)} click @command`,
+      });
+      if (subcommands.length >= 32) return subcommands;
+    }
+  }
+
+  return subcommands;
+}
+
+function collectDocSystemInfo(root) {
+  const systems = [];
+
+  // Sphinx: docs/source/conf.py or docs/conf.py
+  for (const confPath of existingPaths(root, ['docs/source/conf.py', 'docs/conf.py', 'doc/source/conf.py', 'doc/conf.py'])) {
+    systems.push({ system: 'Sphinx', evidence: confPath, detail: 'Python documentation generator' });
+    break;
+  }
+
+  // MkDocs: mkdocs.yml
+  if (fs.existsSync(path.join(root, 'mkdocs.yml'))) {
+    systems.push({ system: 'MkDocs', evidence: 'mkdocs.yml', detail: 'Static site generator for project documentation' });
+  }
+
+  // Docusaurus: docusaurus.config.js or docusaurus.config.ts
+  for (const cfg of existingPaths(root, ['docusaurus.config.js', 'docusaurus.config.ts', 'website/docusaurus.config.js'])) {
+    systems.push({ system: 'Docusaurus', evidence: cfg, detail: 'React-based documentation framework' });
+    break;
+  }
+
+  // Jekyll: _config.yml with gemfile indication
+  if (fs.existsSync(path.join(root, '_config.yml'))) {
+    systems.push({ system: 'Jekyll', evidence: '_config.yml', detail: 'Static site generator' });
+  }
+
+  // Rustdoc: lib.rs or Cargo.toml with doc targets
+  if (fs.existsSync(path.join(root, 'Cargo.toml')) && !systems.some((s) => s.system === 'Sphinx')) {
+    const cargo = readFile(path.join(root, 'Cargo.toml'));
+    if (/\[package\]/.test(cargo)) {
+      systems.push({ system: 'rustdoc', evidence: 'Cargo.toml', detail: 'Rust documentation tool' });
+    }
+  }
+
+  // Doxygen: Doxyfile
+  if (fs.existsSync(path.join(root, 'Doxyfile')) || fs.existsSync(path.join(root, 'docs/Doxyfile'))) {
+    systems.push({ system: 'Doxygen', evidence: 'Doxyfile', detail: 'C/C++ documentation generator' });
+  }
+
+  return systems;
+}
+
+function collectExceptionHierarchy(root, sourceRoots) {
+  const exceptions = [];
+  const seen = new Set();
+  // Match: class XxxError(Exception): or class XxxError(BaseException): or class Xxx(YyyError):
+  const classPattern = /^class\s+([A-Z]\w*(?:Error|Exception|Warning|Fault|Failure))\s*\(\s*([\w.]+)\s*\)\s*:/gm;
+  for (const file of collectSourceFiles(root, sourceRoots, 600)) {
+    if (!file.endsWith('.py')) continue;
+    const text = readFile(path.join(root, file));
+    let match;
+    while ((match = classPattern.exec(text)) !== null) {
+      const name = match[1];
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const parent = match[2];
+      exceptions.push({
+        name,
+        parent,
+        module: file.replace(/\\/g, '/').replace(/\.py$/, ''),
+        evidence: file,
+      });
+      if (exceptions.length >= 32) break;
+    }
+    if (exceptions.length >= 32) break;
+  }
+  return exceptions;
+}
+
+function collectConfigEntries(root, sourceRoots) {
+  const entries = [];
+  const seen = new Set();
+  const push = (entry) => {
+    if (!seen.has(entry.type + ':' + entry.evidence)) {
+      seen.add(entry.type + ':' + entry.evidence);
+      entries.push(entry);
+    }
+  };
+
+  // .env files
+  for (const envPath of existingPaths(root, ['.env', '.env.example', '.env.sample', '.env.template', '.env.local'])) {
+    push({ type: 'env file', evidence: envPath, detail: 'Environment variable file' });
+  }
+
+  // Config files by convention
+  for (const cfgPath of existingPaths(root, ['config', 'configs', 'settings', '.config', 'conf'])) {
+    try {
+      for (const entry of fs.readdirSync(path.join(root, cfgPath))) {
+        if (/\.(ya?ml|json|toml|ini|cfg|py)$/.test(entry)) {
+          push({ type: 'config file', evidence: `${cfgPath}/${entry}`, detail: 'Configuration file' });
+        }
+        if (entries.length >= 24) break;
+      }
+    } catch (_) {}
+  }
+
+  // pyproject.toml config sections
+  const pyprojectPath = path.join(root, 'pyproject.toml');
+  if (fs.existsSync(pyprojectPath)) {
+    const text = readFile(pyprojectPath);
+    const configSections = text.match(/\[tool\.(\w+)[.\]]/g);
+    if (configSections) {
+      for (const section of [...new Set(configSections)]) {
+        const tool = section.replace(/\[tool\./, '').replace(/[.\]]/, '');
+        push({ type: 'tool config', evidence: `pyproject.toml [tool.${tool}]`, detail: `Tool configuration: ${tool}` });
+      }
+    }
+  }
+
+  // Environment variable references in Python source
+  const envPattern = /os\.environ\[(?:["']([^"']+)["'])\]|os\.getenv\(\s*["']([^"']+)["']/g;
+  const envVars = new Map();
+  for (const file of collectSourceFiles(root, sourceRoots, 600)) {
+    if (!file.endsWith('.py')) continue;
+    const text = readFile(path.join(root, file));
+    let match;
+    while ((match = envPattern.exec(text)) !== null) {
+      const varName = match[1] || match[2];
+      if (!envVars.has(varName)) {
+        envVars.set(varName, file);
+      }
+    }
+    if (envVars.size >= 32) break;
+  }
+  for (const [varName, file] of envVars) {
+    push({ type: 'env var', evidence: varName, detail: `Referenced in ${file.replace(/\\/g, '/')}` });
+  }
+
+  return entries.slice(0, 32);
+}
+
+function collectDependencyEntries(root) {
+  const deps = [];
+  const pyprojectPath = path.join(root, 'pyproject.toml');
+  if (!fs.existsSync(pyprojectPath)) return deps;
+
+  const text = readFile(pyprojectPath);
+  // Extract dependencies — can be inline in [project] section or in [project.dependencies]
+  let depContent = '';
+  // Strategy 1: Inline dependencies = [...] under [project]
+  const inlineMatch = text.match(/^dependencies\s*=\s*\[([\s\S]*?)\]/m);
+  if (inlineMatch) {
+    depContent = inlineMatch[1];
+  }
+  // Strategy 2: Separate [project.dependencies] section
+  if (!depContent) {
+    const sectionMatch = text.match(/\[project\.dependencies\]\s*\n([\s\S]*?)(?:\n\[|\n*$)/);
+    if (sectionMatch) depContent = sectionMatch[1];
+  }
+  if (!depContent) return deps;
+
+  const categoryMap = {
+    sqlalchemy: 'database', alembic: 'database', redis: 'database', psycopg: 'database',
+    numpy: 'math', scipy: 'math', pandas: 'math', scikit: 'ml', torch: 'ml',
+    matplotlib: 'visualization', plotly: 'visualization', kaleido: 'visualization',
+    flask: 'web', fastapi: 'web', django: 'web', starlette: 'web',
+    boto3: 'cloud', 'google-cloud': 'cloud',
+    click: 'cli', argparse: 'cli',
+    pytest: 'testing', moto: 'testing',
+    grpcio: 'rpc', protobuf: 'rpc',
+    colorlog: 'logging', tqdm: 'logging',
+  };
+
+  for (const line of depContent.split('\n')) {
+    const m = line.match(/["']\s*([A-Za-z0-9_-]+)/);
+    if (!m) continue;
+    const name = m[1].toLowerCase();
+    let category = 'runtime';
+    for (const [key, cat] of Object.entries(categoryMap)) {
+      if (name.includes(key) || key.includes(name)) {
+        category = cat;
+        break;
+      }
+    }
+    deps.push({ name: m[1], category, evidence: 'pyproject.toml [project.dependencies]' });
+    if (deps.length >= 32) break;
+  }
+  return deps;
 }
 
 function collectDocCommandExamples(root) {
@@ -1684,6 +2085,27 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function matchBracedDict(source, varName) {
+  // Find VARNAME = { or VARNAME: type = { and extract the content between balanced braces
+  // Handles: _COMMANDS = { ... } and _COMMANDS: dict[str, type] = { ... }
+  const startMatch = source.match(new RegExp(`${escapeRegExp(varName)}\\s*[:=][\\s\\S]*?=\\s*\\{`));
+  if (!startMatch) return null;
+  // Find the actual '{' in the match
+  const braceOffset = startMatch[0].lastIndexOf('{');
+  const startIdx = startMatch.index + braceOffset;
+  let depth = 0;
+  let i = startIdx;
+  for (; i < source.length; i++) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') {
+      depth--;
+      if (depth === 0) break;
+    }
+  }
+  if (depth !== 0) return null;
+  return source.substring(startIdx + 1, i);
+}
+
 function detectProjectName(root) {
   const packagePath = path.join(root, 'package.json');
   if (fs.existsSync(packagePath)) {
@@ -1708,6 +2130,53 @@ function detectProjectName(root) {
   }
 
   return path.basename(root);
+}
+
+function detectPythonPackageRoots(root) {
+  const roots = [];
+  const pyprojectPath = path.join(root, 'pyproject.toml');
+  if (!fs.existsSync(pyprojectPath)) return roots;
+
+  const text = readFile(pyprojectPath);
+
+  // Check [tool.setuptools.packages.find] include patterns
+  const findMatch = text.match(/\[tool\.setuptools\.packages\.find\][\s\S]*?include\s*=\s*\[([^\]]+)\]/);
+  if (findMatch) {
+    const patterns = findMatch[1].match(/["']([^"']+)["']/g);
+    if (patterns) {
+      for (const raw of patterns) {
+        const clean = raw.replace(/["']/g, '');
+        if (clean.endsWith('*')) {
+          const prefix = clean.slice(0, -1);
+          try {
+            for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+              if (entry.isDirectory() && entry.name.startsWith(prefix) && fs.existsSync(path.join(root, entry.name, '__init__.py'))) {
+                if (!roots.includes(entry.name)) roots.push(entry.name);
+              }
+            }
+          } catch (_) { /* ignore readdir errors */ }
+        } else if (fs.existsSync(path.join(root, clean, '__init__.py'))) {
+          if (!roots.includes(clean)) roots.push(clean);
+        }
+      }
+    }
+  }
+
+  // Fallback: check if a directory matching project name exists with __init__.py
+  if (!roots.length) {
+    const projectName = detectProjectName(root);
+    const pkgDir = path.join(root, projectName);
+    if (fs.existsSync(path.join(pkgDir, '__init__.py')) && !roots.includes(projectName)) {
+      roots.push(projectName);
+    }
+    // Also check src/<project> layout
+    const srcPkgDir = path.join(root, 'src', projectName);
+    if (fs.existsSync(path.join(srcPkgDir, '__init__.py')) && !roots.includes('src')) {
+      roots.push('src');
+    }
+  }
+
+  return roots.filter((r) => fs.existsSync(path.join(root, r)));
 }
 
 function collectGovernancePrograms(root, context) {
