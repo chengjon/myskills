@@ -1193,10 +1193,22 @@ function uniqueCandidates(candidates, limit) {
   return unique;
 }
 
+function isTestSourceFile(file) {
+  // Test directories: test/, tests/, __tests__/, spec/, specs/, fixtures/, mocks/
+  if (/(^|[\/\\])(tests?|__tests__|spec|specs|fixtures?|mocks?)[\/\\]/i.test(file)) return true;
+  // JS/TS convention: foo.test.ts, foo.spec.tsx (covers co-located tests like src/foo.test.ts)
+  if (/\.(test|spec)\./i.test(file)) return true;
+  // Python/general prefix convention: test_foo.py, test-foo.py, test.foo.py
+  if (/(^|[\/\\])(test|spec)[_.-][^\/\\]*$/i.test(file)) return true;
+  // Python/general suffix convention: foo_test.py, foo-spec.ts
+  if (/(^|[\/\\])[^\/\\]*_(test|spec)\.[^\/\\]+$/i.test(file)) return true;
+  return false;
+}
+
 function collectSourceTodoCandidates(root, sourceRoots) {
   const candidates = [];
   for (const file of collectSourceFiles(root, sourceRoots, 600)) {
-    const isTestFile = /(^|[\/\\])(tests?|spec|__tests__|test_)[\/\\]/i.test(file) || /[_-]test[_\.]|[_\.]spec[_\.]|[_\.]test[_\.]/i.test(file);
+    const isTestFile = isTestSourceFile(file);
     const text = readFile(path.join(root, file));
     const lines = text.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
@@ -1374,6 +1386,10 @@ function sourceNavigationRouteMatches(line) {
 function collectSourceUiRouteEntries(root, sourceRoots) {
   const entries = [];
   for (const file of collectSourceFiles(root, sourceRoots, 400)) {
+    // Skip test/spec files: their route-looking literals are fixtures, not
+    // application UI routes. (e.g. test/sentinels.test.ts has `config: { path:
+    // "/hooks/deploy" }` and `toolArgs: { path: "src/index.ts" }` as test data.)
+    if (isTestSourceFile(file)) continue;
     const lines = readFile(path.join(root, file)).split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
       for (const route of sourceUiRouteMatches(lines[index])) {
@@ -1387,13 +1403,23 @@ function collectSourceUiRouteEntries(root, sourceRoots) {
 
 function sourceUiRouteMatches(line) {
   const matches = [];
-  const patterns = [
-    /<Route\b[^>]*\bpath\s*=\s*["']([^"']+)["']/g,
-    /\bpath\s*:\s*["']([^"']+)["']/g,
-  ];
-  for (const pattern of patterns) {
-    for (const match of line.matchAll(pattern)) {
-      if (isUsefulUiRoute(match[1])) matches.push(match[1]);
+  // JSX router: <Route path="/foo" ...>
+  for (const match of line.matchAll(/<Route\b[^>]*\bpath\s*=\s*["']([^"']+)["']/g)) {
+    if (isUsefulUiRoute(match[1])) matches.push(match[1]);
+  }
+  // Object-literal router entry. The previous bare `path:` pattern matched any
+  // object property named `path` — state mutations (`{ path: "updatedAt" }`),
+  // tool args (`toolArgs: { path: "src/index.ts" }`), webhook configs
+  // (`config: { path: "/hooks/deploy" }`) all slipped through and polluted the
+  // UI route table. Now we require:
+  //   1. the captured value starts with `/` (rejects `updatedAt`, `src/index.ts`)
+  //   2. a router-framework sibling key on the same line — element/component/
+  //      handler/page/screen/render — which real route tables always carry and
+  //      the false-positive sources never do.
+  const routerMarker = /\b(?:element|component|handler|page|screen|render)\s*:/;
+  for (const match of line.matchAll(/\bpath\s*:\s*["'](\/[^"']+)["']/g)) {
+    if (routerMarker.test(line) && isUsefulUiRoute(match[1])) {
+      matches.push(match[1]);
     }
   }
   return matches;
@@ -1418,10 +1444,16 @@ function normalizeUiRoute(value) {
 
 function isUsefulUiRoute(value) {
   const route = normalizeUiRoute(value);
-  return route.startsWith('/')
-    && !/^\/api(?:\/|$)/i.test(route)
-    && !route.includes('*')
-    && !route.includes('${');
+  if (!route.startsWith('/') || route.length === 0) return false;
+  if (/^\/api(?:\/|$)/i.test(route)) return false;
+  if (route.includes('*') || route.includes('${')) return false;
+  // Reject code-file extensions — `/src/index.ts` etc. are file paths that
+  // leaked through `path:` matching, not real routes.
+  if (/\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|swift|rb|php|cs|c|cc|cpp|h|hpp)$/i.test(route)) return false;
+  // Reject single-character routes — almost always test fixtures like `/a`.
+  // (Root route `/` still passes: it has zero chars after the slash.)
+  if (/^\/.$/.test(route)) return false;
+  return true;
 }
 
 function uniqueUiEntries(entries, limit) {

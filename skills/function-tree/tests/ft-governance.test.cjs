@@ -837,3 +837,125 @@ test('steward-sync writes relationship index, gate, evidence, and track artifact
   const track = readText(root, '.governance/steward/tracks/checkout-flow.md');
   assert.match(track, /Add payment confirmation/);
 });
+
+// Regression tests for false-positive UI routes. See skill commit history:
+// the bare `path:` regex matched state mutations, tool args, and webhook
+// configs in addition to real router objects; test files fed fixtures into the
+// route table. These tests pin down the cleaned-up discovery using the exact
+// snippets that previously slipped through.
+
+test('UI route discovery rejects path: values that lack a router-framework sibling key', () => {
+  const root = makeRepo();
+  fs.mkdirSync(path.join(root, 'src', 'functions'), { recursive: true });
+  // Real-world false positives pulled from agentmemory source:
+  //   - `{ type: "set", path: "updatedAt", ... }` (state mutation, no router key)
+  //   - `{ type: "set", path: "observationCount", ... }` (same)
+  //   - `{ type: "webhook", config: { path: "/hooks/deploy" } }` (webhook config)
+  fs.writeFileSync(path.join(root, 'src', 'functions', 'observe.ts'), [
+    'const updates: Array<{ type: "set"; path: string; value: unknown }> = [',
+    '  { type: "set", path: "updatedAt", value: new Date().toISOString() },',
+    '  { type: "set", path: "observationCount", value: 0 },',
+    '  { type: "set", path: "firstPrompt", value: "" },',
+    '];',
+    'const webhook = { type: "webhook", config: { path: "/hooks/deploy" } };',
+    '',
+  ].join('\n'));
+
+  run(['init', 'ui-governance', '--ref', 'ui/root', '--root', root], root);
+  const doc = readText(root, 'FUNCTION_TREE.md');
+
+  // None of these should appear in the UI route table or as feature candidates.
+  assert.doesNotMatch(doc, /UI route `\/updatedAt`/);
+  assert.doesNotMatch(doc, /UI route `\/observationCount`/);
+  assert.doesNotMatch(doc, /UI route `\/firstPrompt`/);
+  assert.doesNotMatch(doc, /UI route `\/hooks\/deploy`/);
+  // Source line evidence must not be cited either.
+  assert.doesNotMatch(doc, /src\/functions\/observe\.ts:\d+/);
+});
+
+test('UI route discovery skips test files entirely', () => {
+  const root = makeRepo();
+  fs.mkdirSync(path.join(root, 'test'), { recursive: true });
+  // Real-world false positives pulled from agentmemory test fixtures:
+  //   - test/sentinels.test.ts: `{ type: "webhook", config: { path: "/hooks/deploy" } }`
+  //   - test/sentinels.test.ts: `{ type: "webhook", config: { path: "/a" } }`
+  //   - test/copilot-plugin.test.ts: `toolArgs: { path: "src/index.ts" }`
+  fs.writeFileSync(path.join(root, 'test', 'sentinels.test.ts'), [
+    'test("webhook deploy", () => {',
+    '  const result = create({',
+    '    type: "webhook",',
+    '    config: { path: "/hooks/deploy" },',
+    '  });',
+    '});',
+    'test("webhook minimal", () => {',
+    '  const result = create({',
+    '    type: "webhook",',
+    '    config: { path: "/a" },',
+    '  });',
+    '});',
+    '',
+  ].join('\n'));
+  fs.writeFileSync(path.join(root, 'test', 'copilot-plugin.test.ts'), [
+    'test("tool invocation", () => {',
+    '  const call = {',
+    '    toolName: "read",',
+    '    toolArgs: { path: "src/index.ts" },',
+    '  };',
+    '});',
+    '',
+  ].join('\n'));
+
+  run(['init', 'ui-governance', '--ref', 'ui/root', '--root', root], root);
+  const doc = readText(root, 'FUNCTION_TREE.md');
+
+  assert.doesNotMatch(doc, /UI route `\/hooks\/deploy`/);
+  assert.doesNotMatch(doc, /UI route `\/a`/);
+  assert.doesNotMatch(doc, /UI route `\/src\/index\.ts`/);
+  assert.doesNotMatch(doc, /test\/sentinels\.test\.ts:\d+/);
+  assert.doesNotMatch(doc, /test\/copilot-plugin\.test\.ts:\d+/);
+});
+
+test('UI route discovery still accepts real router object literals', () => {
+  // Positive-case regression: the tightened `path:` matcher must still catch
+  // legitimate React Router / Vue Router style route tables that carry a
+  // sibling element/component/page key on the same line.
+  const root = makeRepo();
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'router.tsx'), [
+    'export const routes = [',
+    "  { path: '/dashboard', element: <Dashboard /> },",
+    "  { path: '/settings', component: Settings },",
+    '];',
+    '',
+  ].join('\n'));
+
+  run(['init', 'ui-governance', '--ref', 'ui/root', '--root', root], root);
+  const doc = readText(root, 'FUNCTION_TREE.md');
+
+  assert.match(doc, /UI route `\/dashboard`/);
+  assert.match(doc, /UI route `\/settings`/);
+  assert.match(doc, /src\/router\.tsx/);
+});
+
+test('UI route discovery rejects code-file-extension and single-character routes', () => {
+  // Defense-in-depth on isUsefulUiRoute: even if a `path:` literal starts with
+  // `/` and slips past the router-marker check, the value still has to look
+  // like a route. `/src/index.ts` and `/a` should never be accepted.
+  const root = makeRepo();
+  fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'src', 'router.tsx'), [
+    'export const routes = [',
+    "  { path: '/src/index.ts', element: <Stub /> },",
+    "  { path: '/a', element: <Stub /> },",
+    "  { path: '/real', element: <Real /> },",
+    '];',
+    '',
+  ].join('\n'));
+
+  run(['init', 'ui-governance', '--ref', 'ui/root', '--root', root], root);
+  const doc = readText(root, 'FUNCTION_TREE.md');
+
+  assert.doesNotMatch(doc, /UI route `\/src\/index\.ts`/);
+  assert.doesNotMatch(doc, /UI route `\/a`/);
+  assert.match(doc, /UI route `\/real`/);
+});
