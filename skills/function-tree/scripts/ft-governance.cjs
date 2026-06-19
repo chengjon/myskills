@@ -121,7 +121,7 @@ function main() {
         syncStewardProfile(root);
         break;
       case 'validate':
-        validateGovernance(root, parsed.flags);
+        validateGovernance(root, parsed.flags, parsed.args);
         break;
       case 'scope-check':
         scopeCheck(root, parsed.flags);
@@ -189,7 +189,7 @@ function usage(code) {
     '  ft-governance.cjs gate [--verbose] [--root <repo>]',
     '  ft-governance.cjs sync [--root <repo>]',
     '  ft-governance.cjs steward-sync [--root <repo>]',
-    '  ft-governance.cjs validate [--steward] [--root <repo>]',
+    '  ft-governance.cjs validate [full] [--steward] [--root <repo>]',
     '  ft-governance.cjs scope-check [--files a,b,c] [--root <repo>]',
   ].join('\n');
   console.log(text);
@@ -859,6 +859,9 @@ function collectProjectInfo(root) {
   for (const pkgRoot of detectPythonPackageRoots(root)) {
     if (!sourceRoots.includes(pkgRoot)) sourceRoots.push(pkgRoot);
   }
+  for (const nestedRoot of detectNestedProjectRoots(root)) {
+    if (!sourceRoots.includes(nestedRoot)) sourceRoots.push(nestedRoot);
+  }
   const manifests = existingPaths(root, [
     'package.json',
     'pyproject.toml',
@@ -1279,19 +1282,95 @@ function collectUiEntries(root, sourceRoots) {
 
 function collectFileBasedUiEntries(root) {
   const entries = [];
-  for (const file of collectFilesUnder(root, 'app', 200, (name) => /^page\.(js|jsx|ts|tsx|mdx)$/i.test(name))) {
-    const route = nextAppRouteFromFile(file);
-    if (isUsefulUiRoute(route)) entries.push(uiEntry(route, file, 'Next app router'));
+  // Next.js App Router: scan both top-level `app/` and nested layouts like
+  // `<sub>/src/app/` or `<sub>/app/` (monorepo / non-standard roots).
+  const appDirs = ['app'];
+  for (const sub of detectSubdirs(root)) {
+    if (fs.existsSync(path.join(root, sub, 'src', 'app'))) appDirs.push(`${sub}/src/app`);
+    if (fs.existsSync(path.join(root, sub, 'app'))) appDirs.push(`${sub}/app`);
   }
-  for (const file of collectFilesUnder(root, 'pages', 200, (name) => /\.(js|jsx|ts|tsx|mdx)$/i.test(name))) {
-    const route = nextPagesRouteFromFile(file);
-    if (isUsefulUiRoute(route)) entries.push(uiEntry(route, file, 'Next pages router'));
+  for (const appDir of appDirs) {
+    for (const file of collectFilesUnder(root, appDir, 200, (name) => /^page\.(js|jsx|ts|tsx|mdx)$/i.test(name))) {
+      const route = nextAppRouteFromFileRelative(file, appDir);
+      if (isUsefulUiRoute(route)) entries.push(uiEntry(route, file, 'Next app router'));
+    }
   }
-  for (const file of collectFilesUnder(root, 'src/routes', 200, (name) => /^\+page\.(svelte|js|ts)$/i.test(name))) {
-    const route = svelteKitRouteFromFile(file);
-    if (isUsefulUiRoute(route)) entries.push(uiEntry(route, file, 'SvelteKit route'));
+  // Next.js Pages Router: top-level `pages/` and nested `<sub>/pages/`.
+  const pagesDirs = ['pages'];
+  for (const sub of detectSubdirs(root)) {
+    if (fs.existsSync(path.join(root, sub, 'pages'))) pagesDirs.push(`${sub}/pages`);
+    if (fs.existsSync(path.join(root, sub, 'src', 'pages'))) pagesDirs.push(`${sub}/src/pages`);
+  }
+  for (const pagesDir of pagesDirs) {
+    for (const file of collectFilesUnder(root, pagesDir, 200, (name) => /\.(js|jsx|ts|tsx|mdx)$/i.test(name))) {
+      const route = nextPagesRouteFromFileRelative(file, pagesDir);
+      if (isUsefulUiRoute(route)) entries.push(uiEntry(route, file, 'Next pages router'));
+    }
+  }
+  // SvelteKit: top-level `src/routes` and nested.
+  const svelteDirs = ['src/routes'];
+  for (const sub of detectSubdirs(root)) {
+    if (fs.existsSync(path.join(root, sub, 'src', 'routes'))) svelteDirs.push(`${sub}/src/routes`);
+  }
+  for (const svelteDir of svelteDirs) {
+    for (const file of collectFilesUnder(root, svelteDir, 200, (name) => /^\+page\.(svelte|js|ts)$/i.test(name))) {
+      const route = svelteKitRouteFromFileRelative(file, svelteDir);
+      if (isUsefulUiRoute(route)) entries.push(uiEntry(route, file, 'SvelteKit route'));
+    }
   }
   return entries;
+}
+
+// Returns a list of immediate subdirectories of root, excluding common noise
+// (.git, node_modules, build artifacts, .ftignore candidates). Used to locate
+// nested sub-projects without paying for a full recursive walk.
+function detectSubdirs(root) {
+  const ignored = new Set(['.git', '.governance', 'node_modules', 'dist', 'build', '.next', '.venv', '__pycache__', '.omc', 'target', 'coverage']);
+  const out = [];
+  try {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || ignored.has(entry.name)) continue;
+      out.push(entry.name);
+    }
+  } catch (_) { /* ignore */ }
+  return out;
+}
+
+// Next.js App Router route derivation that accepts a configurable base directory,
+// so `frontend/src/app/notes/page.tsx` correctly maps to `/notes` rather than
+// the historical assumption of a top-level `app/`.
+function nextAppRouteFromFileRelative(relativePath, baseDir) {
+  const prefix = baseDir.endsWith('/') ? baseDir : baseDir + '/';
+  if (!relativePath.startsWith(prefix)) return '';
+  const rest = relativePath.slice(prefix.length);
+  const parts = rest.split('/');
+  const fileName = parts.pop();
+  if (!fileName || !/^page\./i.test(fileName)) return '';
+  const routeParts = parts.filter((part) => !isPathlessUiSegment(part));
+  return normalizeUiRoute(routeParts.length ? routeParts.join('/') : '/');
+}
+
+function nextPagesRouteFromFileRelative(relativePath, baseDir) {
+  const prefix = baseDir.endsWith('/') ? baseDir : baseDir + '/';
+  if (!relativePath.startsWith(prefix)) return '';
+  const parts = relativePath.slice(prefix.length).split('/');
+  if (!parts.length || /^api$/i.test(parts[0])) return '';
+  const fileName = parts.pop() || '';
+  const pageName = fileName.replace(/\.(js|jsx|ts|tsx|mdx)$/i, '');
+  if (!pageName || pageName.startsWith('_')) return '';
+  if (pageName !== 'index') parts.push(pageName);
+  if (parts.some((part) => part.startsWith('_'))) return '';
+  return normalizeUiRoute(parts.length ? parts.join('/') : '/');
+}
+
+function svelteKitRouteFromFileRelative(relativePath, baseDir) {
+  const prefix = baseDir.endsWith('/') ? baseDir : baseDir + '/';
+  if (!relativePath.startsWith(prefix)) return '';
+  const parts = relativePath.slice(prefix.length).split('/');
+  const fileName = parts.pop();
+  if (!fileName || !/^\+page\./i.test(fileName)) return '';
+  const routeParts = parts.filter((part) => !isPathlessUiSegment(part));
+  return normalizeUiRoute(routeParts.length ? routeParts.join('/') : '/');
 }
 
 function collectFilesUnder(root, relativeDir, limit, acceptFileName) {
@@ -1316,33 +1395,6 @@ function collectFilesUnder(root, relativeDir, limit, acceptFileName) {
 
   walk(relativeDir);
   return files;
-}
-
-function nextAppRouteFromFile(relativePath) {
-  const parts = relativePath.split('/').slice(1);
-  const fileName = parts.pop();
-  if (!fileName || !/^page\./i.test(fileName)) return '';
-  const routeParts = parts.filter((part) => !isPathlessUiSegment(part));
-  return normalizeUiRoute(routeParts.length ? routeParts.join('/') : '/');
-}
-
-function nextPagesRouteFromFile(relativePath) {
-  const parts = relativePath.split('/').slice(1);
-  if (!parts.length || /^api$/i.test(parts[0])) return '';
-  const fileName = parts.pop() || '';
-  const pageName = fileName.replace(/\.(js|jsx|ts|tsx|mdx)$/i, '');
-  if (!pageName || pageName.startsWith('_')) return '';
-  if (pageName !== 'index') parts.push(pageName);
-  if (parts.some((part) => part.startsWith('_'))) return '';
-  return normalizeUiRoute(parts.length ? parts.join('/') : '/');
-}
-
-function svelteKitRouteFromFile(relativePath) {
-  const parts = relativePath.split('/').slice(2);
-  const fileName = parts.pop();
-  if (!fileName || !/^\+page\./i.test(fileName)) return '';
-  const routeParts = parts.filter((part) => !isPathlessUiSegment(part));
-  return normalizeUiRoute(routeParts.length ? routeParts.join('/') : '/');
 }
 
 function isPathlessUiSegment(part) {
@@ -2546,6 +2598,64 @@ function collectGovernancePrograms(root, context) {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+function detectNestedProjectRoots(root) {
+  // Scan for nested sub-projects one level below the repo root. Returns relative
+  // paths of sub-project source directories so existing collect* functions can
+  // scan them.
+  //
+  // Trigger conditions for each subdir (any one adds it to roots):
+  //   1. package.json present → adds <dir>/src if exists, else <dir>
+  //   2. pyproject.toml present → adds <dir>
+  //   3. Python source layout: subdir contains .py files or __init__.py at top
+  //      level (covers cases where root manifest covers the subdir, e.g. api/
+  //      and open_notebook/ in open-notebook repo).
+  //
+  // Boundaries: only scans one level deep to avoid expensive walks; only
+  // standard layout conventions are recognized.
+  const roots = [];
+  const ignored = new Set(['.git', '.governance', 'node_modules', 'dist', 'build', '.next', '.venv', '__pycache__', '.omc', 'tests', 'test', 'docs', 'documentation', 'scripts', 'tools', 'assets', 'public', 'static', 'migrations']);
+
+  let topEntries = [];
+  try {
+    topEntries = fs.readdirSync(root, { withFileTypes: true });
+  } catch (_) { return roots; }
+
+  for (const entry of topEntries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.') || ignored.has(entry.name)) continue;
+    const subdir = entry.name;
+    const subdirPath = path.join(root, subdir);
+    const pkgJson = path.join(subdirPath, 'package.json');
+    const pyproject = path.join(subdirPath, 'pyproject.toml');
+    const hasInit = fs.existsSync(path.join(subdirPath, '__init__.py'));
+    const hasPyFiles = listContainsPyFiles(subdirPath);
+
+    if (fs.existsSync(pkgJson)) {
+      if (fs.existsSync(path.join(subdirPath, 'src')) && !roots.includes(`${subdir}/src`)) {
+        roots.push(`${subdir}/src`);
+      } else if (!roots.includes(subdir)) {
+        roots.push(subdir);
+      }
+      continue;
+    }
+    if (fs.existsSync(pyproject) || hasInit || hasPyFiles) {
+      if (!roots.includes(subdir)) roots.push(subdir);
+    }
+  }
+  return roots;
+}
+
+function listContainsPyFiles(dir) {
+  // Returns true if directory directly contains at least one .py file (non-recursive).
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (_) { return false; }
+  for (const e of entries) {
+    if (e.isFile() && e.name.endsWith('.py')) return true;
+  }
+  return false;
+}
+
 function readProgramTreeMeta(programDir) {
   const treePath = path.join(programDir, 'tree.md');
   if (!fs.existsSync(treePath)) return { ref: '', description: '' };
@@ -2844,7 +2954,7 @@ function activeGateFromNode(program, node) {
   };
 }
 
-function validateGovernance(root, flags = {}) {
+function validateGovernance(root, flags = {}, args = []) {
   const errors = [];
   const warnings = [];
   const gov = path.join(root, '.governance');
@@ -2857,6 +2967,7 @@ function validateGovernance(root, flags = {}) {
   }
 
   const programsDir = path.join(gov, 'programs');
+  const allNodes = [];
   if (fs.existsSync(programsDir)) {
     for (const program of fs.readdirSync(programsDir)) {
       const nodesPath = path.join(programsDir, program, 'nodes.json');
@@ -2869,8 +2980,20 @@ function validateGovernance(root, flags = {}) {
       nodes.forEach((node, index) => {
         validateNodeLike(node, `${program}.nodes[${index}]`, errors, false, currentHead);
         if (flags.steward) validateStewardNode(node, `${program}.nodes[${index}]`, warnings);
+        if (node && typeof node === 'object') {
+          allNodes.push({ program, node, label: `${program}.nodes[${index}]` });
+        }
       });
     }
+  }
+
+  const isFull = args.includes('full');
+  if (isFull) {
+    const docPath = path.join(root, 'FUNCTION_TREE.md');
+    const info = fs.existsSync(docPath) ? collectProjectInfo(root) : null;
+    validateCapabilityCrossReference(allNodes, info, warnings);
+    validatePortConflicts(root, warnings);
+    validateDocConsistency(docPath, info, root, errors, warnings);
   }
 
   if (errors.length) {
@@ -2878,7 +3001,99 @@ function validateGovernance(root, flags = {}) {
     process.exit(1);
   }
   if (warnings.length) console.log(warnings.map((e) => `WARN ${e}`).join('\n'));
-  console.log('governance validation passed');
+  console.log(isFull ? 'governance validation (full) passed' : 'governance validation passed');
+}
+
+function validateCapabilityCrossReference(nodeRecords, info, warnings) {
+  if (!info) return;
+  // Each governance node whose node_type references a capability (ui/api/cli/module)
+  // should have evidence that the capability exists in the scanned project info.
+  const capabilityKinds = new Set(['ui', 'api', 'cli', 'module', 'feature']);
+  const uiRoutes = new Set((info.uiEntries || []).map((e) => e.route));
+  const apiRoutes = new Set((info.apiEntries || []).map((e) => `${e.method} ${e.path}`));
+  const commands = new Set((info.commandEntries || []).map((e) => e.command));
+  const modules = new Set((info.sourceModules || []).map((m) => m.path));
+  for (const rec of nodeRecords) {
+    const nt = String(rec.node.node_type || '').toLowerCase();
+    if (!capabilityKinds.has(nt)) continue;
+    const ref = rec.node.function_tree_ref || rec.node.ref || '';
+    if (!ref) {
+      warnings.push(`${rec.label} capability node missing function_tree_ref`);
+      continue;
+    }
+    if (nt === 'ui' && uiRoutes.size && !uiRoutes.has(ref)) {
+      warnings.push(`${rec.label} references UI route \`${ref}\` not present in scanned UI entries`);
+    }
+    if (nt === 'api' && apiRoutes.size && !apiRoutes.has(ref)) {
+      warnings.push(`${rec.label} references API endpoint \`${ref}\` not present in scanned API entries`);
+    }
+    if (nt === 'cli' && commands.size && !commands.has(ref)) {
+      warnings.push(`${rec.label} references CLI command \`${ref}\` not present in scanned command entries`);
+    }
+    if (nt === 'module' && modules.size && !modules.has(ref)) {
+      warnings.push(`${rec.label} references module \`${ref}\` not present in scanned source modules`);
+    }
+  }
+}
+
+function validatePortConflicts(root, warnings) {
+  // Scan FUNCTION_TREE.md project-notes and root manifests/Makefile/docker-compose for declared
+  // listening ports, then flag duplicates.
+  const ports = new Map(); // port -> [sources]
+  const docPath = path.join(root, 'FUNCTION_TREE.md');
+  if (fs.existsSync(docPath)) {
+    const text = readFile(docPath);
+    const portRe = /\b(\d{4,5})\b/g;
+    let m;
+    while ((m = portRe.exec(text)) !== null) {
+      const p = m[1];
+      const lineStart = text.lastIndexOf('\n', m.index) + 1;
+      const lineEnd = text.indexOf('\n', m.index);
+      const line = text.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
+      if (/port|listen|服务|frontend|backend|api|surreal|database|监听/i.test(line)) {
+        if (!ports.has(p)) ports.set(p, []);
+        ports.get(p).push('FUNCTION_TREE.md');
+      }
+    }
+  }
+  for (const fname of ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml', 'Makefile']) {
+    const fpath = path.join(root, fname);
+    if (!fs.existsSync(fpath)) continue;
+    const text = readFile(fpath);
+    const exposedRe = /(?:ports|expose|EXPOSE|listen|--port)[^\n]*?(\d{4,5})\b/g;
+    let em;
+    while ((em = exposedRe.exec(text)) !== null) {
+      const p = em[1];
+      if (!ports.has(p)) ports.set(p, []);
+      ports.get(p).push(fname);
+    }
+  }
+  for (const [port, sources] of ports) {
+    const uniqSources = [...new Set(sources)];
+    if (uniqSources.length > 1) {
+      warnings.push(`port ${port} declared in multiple sources: ${uniqSources.join(', ')} (verify no real listener conflict)`);
+    }
+  }
+}
+
+function validateDocConsistency(docPath, info, root, errors, warnings) {
+  if (!fs.existsSync(docPath)) {
+    warnings.push(`${rel(root, docPath)} missing; run \`ft doc\` to generate`);
+    return;
+  }
+  if (!info) return;
+  const text = readFile(docPath);
+  // Doc should mention at least one of each detected entry type.
+  if ((info.uiEntries || []).length && !/UI|页面|route/i.test(text)) {
+    warnings.push('FUNCTION_TREE.md missing UI/page section despite detected UI entries');
+  }
+  if ((info.apiEntries || []).length && !/API|服务|endpoint/i.test(text)) {
+    warnings.push('FUNCTION_TREE.md missing API/service section despite detected API entries');
+  }
+  // Doc must still carry auto-scan marker if any structured/free notes exist.
+  if (!/<!--\s*ft:auto-scan/.test(text) && /<!--\s*ft:(structured-notes|free-notes)/.test(text)) {
+    errors.push('FUNCTION_TREE.md structured/free-notes blocks present without ft:auto-scan block (corrupted doc)');
+  }
 }
 
 function validateNodeLike(node, label, errors, gateMode, currentHead) {
