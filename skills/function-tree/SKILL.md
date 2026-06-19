@@ -42,6 +42,8 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 | `/ft:mainline` | `mainline` | Print the active mainline tree (depth=0 root + depth=1/2 children + backlog + switch-lock state). Use to verify work stays on the唯一 active mainline |
 | `/ft:locate <file>` | `locate <file>` | Resolve which track (mainline/backlog/optimize/untracked) a file belongs to via `.governance/file-to-track.json`. Use before edits to catch drift |
 | `/ft:map` | `map` | Rebuild the file-to-track reverse index and print coverage stats (files per track). Idempotent; safe to run anytime |
+| `/ft:drift-check` | `drift-check --files <a,b,c> \| --staged` | Strict drift detector. Exit 0 = all files on mainline (or backlog/optimize with warning); exit 1 = any UNTRACKED file; exit 2 = bad args. Outputs JSON lines per file + summary |
+| `/ft:accept-drift` | `accept-drift --reason <text> --files <a,b,c>` | Phase 3 placeholder. Currently refuses with exit 2 and documents the future API. Phase 3 will write `.governance/drift-acceptances.json` |
 
 ## Mainline Layering (Phase 1)
 
@@ -52,6 +54,29 @@ Nodes carry an optional `track` field (`mainline` / `backlog` / `optimize` / `un
 **Switch-lock**: while an active mainline exists, backlog/optimize nodes cannot be authorized — `/ft:mainline` prints `切换锁：active` to surface this. Run `/ft:mainline` before starting work and `/ft:locate <file>` before editing to catch drift early.
 
 Phase 1 only adds read-only visibility (`ft mainline` / `ft locate` / `ft map`). Accept/reject drift prompts, validate-full mainline rules, and hook enforcement arrive in Phase 2-4.
+
+## Mainline Enforcement (Phase 2)
+
+Phase 2 hardens the read-only visibility into write-time checks:
+
+**`validate full` mainline rules** (run automatically when `.governance/programs/` exists):
+
+- **V-MAINLINE-UNIQUE**: error if more than one active `track=mainline depth=0` node exists
+- **V-MAINLINE-ORPHAN**: error if a `track=mainline depth=1/2` node's `mainline_id` doesn't resolve to a mainline root
+- **V-BACKLOG-LOCK**: error if any `track=backlog`/`optimize` node is in `authorized`/`implementation` status while an active mainline exists (switch lock violation); warning if such a node is still in `planning`
+- **V-DEPTH-MISMATCH**: error if `depth=0` node has `mainline_id != self.id`, or `depth=1/2` node has `mainline_id == self.id` / missing
+
+**`ft drift-check` exit codes (strict mode)**:
+
+| Situation | Exit | Output |
+|---|---|---|
+| All files tracked (any track) | 0 | JSON lines + summary, silent unless backlog/optimize warning |
+| Any file UNTRACKED | 1 | JSON lines + `HARD FAIL: N file(s) UNTRACKED` |
+| Missing `--files` or `--staged` | 2 | `drift-check requires --files <a,b,c> or --staged` |
+
+Output format per file: `{"file": "<rel>", "track": "<mainline|backlog|optimize|untracked>", "drift": <bool>, "active_mainline": "<prog/id|null>", "node_id": "...", "program": "...", "mainline_id": "...", "depth": <n>}`.
+
+Use `ft drift-check --staged` in pre-commit hooks (Phase 4 target). `ft accept-drift --reason --files` is reserved as the Phase 3 escape hatch; for now it just prints guidance and exits 2.
 
 ## Hard Rules
 

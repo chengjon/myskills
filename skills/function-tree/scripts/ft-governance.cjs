@@ -135,6 +135,12 @@ function main() {
       case 'map':
         cmdMap(root);
         break;
+      case 'drift-check':
+        cmdDriftCheck(root, parsed.flags, parsed.args);
+        break;
+      case 'accept-drift':
+        cmdAcceptDrift(root, parsed.flags, parsed.args);
+        break;
       default:
         fail(`unknown command: ${parsed.command}`, 2);
     }
@@ -203,6 +209,8 @@ function usage(code) {
     '  ft-governance.cjs mainline [--root <repo>]',
     '  ft-governance.cjs locate <file-path> [--root <repo>]',
     '  ft-governance.cjs map [--root <repo>]',
+    '  ft-governance.cjs drift-check --files <a,b,c> | --staged [--root <repo>]',
+    '  ft-governance.cjs accept-drift --reason <text> --files <a,b,c> [--root <repo>]   (Phase 3 placeholder)',
   ].join('\n');
   console.log(text);
   process.exit(code);
@@ -3102,6 +3110,71 @@ function readJsonSafe(p) {
   try { return readJson(p); } catch (_) { return null; }
 }
 
+// Phase 2 mainline validators — run only under `validate full`.
+function validateMainlineUnique(resolved, errors) {
+  const activeRoots = resolved.filter((e) => e.track === 'mainline' && e.depth === 0 && isActiveStatus(e.node.status));
+  if (activeRoots.length > 1) {
+    const list = activeRoots.map((r) => `${r.program}/${r.node.id}`).join(', ');
+    errors.push(`V-MAINLINE-UNIQUE: ${activeRoots.length} active mainline roots found (${list}); at most one active depth=0 mainline node is allowed at a time`);
+  }
+}
+
+function validateMainlineOrphan(resolved, errors) {
+  const byId = new Map(resolved.map((r) => [`${r.program}/${r.node.id}`, r]));
+  const validMainlineRoots = new Set(
+    resolved
+      .filter((e) => e.track === 'mainline' && e.depth === 0)
+      .map((e) => `${e.program}/${e.node.id}`)
+  );
+  for (const entry of resolved) {
+    if (entry.track !== 'mainline') continue;
+    if (entry.depth === 0 || entry.depth === 99) continue;
+    const parentKey = entry.mainline_id ? `${entry.program}/${entry.mainline_id}` : null;
+    if (!parentKey || !validMainlineRoots.has(parentKey)) {
+      const hint = parentKey && byId.has(parentKey)
+        ? `parent ${parentKey} exists but is not a mainline root (track=${byId.get(parentKey).track}, depth=${byId.get(parentKey).depth})`
+        : `parent ${parentKey || '(missing mainline_id)'} not found among mainline roots`;
+      errors.push(`V-MAINLINE-ORPHAN: ${entry.program}/${entry.node.id} (depth=${entry.depth}) references ${hint}`);
+    }
+  }
+}
+
+function validateBacklogSwitchLock(resolved, errors, warnings) {
+  const activeMainlineRoot = resolved.find((e) => e.track === 'mainline' && e.depth === 0 && isActiveStatus(e.node.status));
+  if (!activeMainlineRoot) return; // no lock when no active mainline
+  const violationStatuses = ['authorized', 'implementation'];
+  for (const entry of resolved) {
+    if (entry.track !== 'backlog' && entry.track !== 'optimize') continue;
+    const status = entry.node.status || '';
+    if (violationStatuses.includes(status)) {
+      errors.push(`V-BACKLOG-LOCK: ${entry.program}/${entry.node.id} (track=${entry.track}) is in status=${status} while active mainline ${activeMainlineRoot.program}/${activeMainlineRoot.node.id} exists; switch lock forbids authorizing backlog/optimize work until mainline closes`);
+    } else if (status === 'planning') {
+      warnings.push(`V-BACKLOG-LOCK: ${entry.program}/${entry.node.id} (track=${entry.track}) is in planning; switch lock active, do not advance to authorized until mainline closes`);
+    }
+  }
+}
+
+function validateDepthConsistency(resolved, errors) {
+  for (const entry of resolved) {
+    if (entry.track !== 'mainline') continue;
+    const nodeId = `${entry.program}/${entry.node.id}`;
+    if (entry.depth === 0) {
+      const selfId = entry.node.mainline_id || '';
+      if (selfId && selfId !== entry.node.id) {
+        errors.push(`V-DEPTH-MISMATCH: ${nodeId} has depth=0 but mainline_id=${selfId}; depth=0 roots must have mainline_id equal to self or omitted`);
+      }
+    } else if (entry.depth === 1 || entry.depth === 2) {
+      const selfId = entry.node.mainline_id || '';
+      if (selfId === entry.node.id) {
+        errors.push(`V-DEPTH-MISMATCH: ${nodeId} has depth=${entry.depth} but mainline_id equals self.id; only depth=0 roots may self-reference`);
+      }
+      if (!selfId) {
+        errors.push(`V-DEPTH-MISMATCH: ${nodeId} has depth=${entry.depth} but mainline_id is missing; child nodes must reference their parent root`);
+      }
+    }
+  }
+}
+
 function cmdMainline(root) {
   const { resolved } = loadAllNodesResolved(root);
   if (!resolved.length) {
@@ -3209,6 +3282,110 @@ function cmdMap(root) {
   console.log(`path: ${path.join(root, '.governance', 'file-to-track.json')}`);
 }
 
+function listStagedFiles(root) {
+  try {
+    const out = run('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMRTUXB'], root);
+    return out.split('\n').map((s) => s.trim()).filter(Boolean);
+  } catch (_) {
+    return [];
+  }
+}
+
+function cmdDriftCheck(root, flags) {
+  // Source files: explicit --files a,b,c, or --staged (git diff --cached), or both.
+  // Output: JSON lines per file + human-readable summary at end.
+  // Exit codes (strict mode):
+  //   0  all files tracked (mainline OR backlog OR optimize)
+  //   1  any file UNTRACKED
+  //   2  invalid arguments
+  const filesFlag = one(flags, 'files');
+  const useStaged = flags.staged === true || flags['--staged'] === true;
+  let files = [];
+  if (filesFlag) files = filesFlag.split(',').map((s) => s.trim()).filter(Boolean);
+  if (useStaged) {
+    const staged = listStagedFiles(root);
+    files = Array.from(new Set([...files, ...staged]));
+  }
+  if (!files.length) {
+    console.error('drift-check requires --files <a,b,c> or --staged');
+    process.exit(2);
+  }
+  if (!fs.existsSync(path.join(root, '.governance', 'programs'))) {
+    console.log('no governance nodes; every file is UNTRACKED');
+    process.exit(1);
+  }
+  // Ensure index is fresh
+  buildFileToTrackIndex(root);
+  const index = readJsonSafe(path.join(root, '.governance', 'file-to-track.json')) || { files: {} };
+  const { resolved } = loadAllNodesResolved(root);
+  const activeMainline = resolved.find((e) => e.track === 'mainline' && e.depth === 0 && isActiveStatus(e.node.status));
+
+  let mainlineCount = 0, backlogCount = 0, optimizeCount = 0, untrackedCount = 0;
+  for (const file of files) {
+    const rel = relPath(root, file);
+    const entry = index.files[rel];
+    let track = 'untracked';
+    let nodeInfo = null;
+    if (entry) {
+      track = entry.track || 'untracked';
+      nodeInfo = {
+        node_id: entry.node_id,
+        program: entry.program,
+        mainline_id: entry.mainline_id || null,
+        depth: entry.depth,
+      };
+    }
+    const drift = track === 'untracked';
+    const record = { file: rel, track, drift, active_mainline: activeMainline ? `${activeMainline.program}/${activeMainline.node.id}` : null, ...nodeInfo };
+    console.log(JSON.stringify(record));
+    if (track === 'mainline') mainlineCount++;
+    else if (track === 'backlog') backlogCount++;
+    else if (track === 'optimize') optimizeCount++;
+    else untrackedCount++;
+  }
+  console.error('---');
+  console.error(`drift-check: mainline=${mainlineCount} backlog=${backlogCount} optimize=${optimizeCount} untracked=${untrackedCount}`);
+  if (activeMainline) {
+    console.error(`active mainline: ${activeMainline.program}/${activeMainline.node.id} (${activeMainline.node.title || ''})`);
+  } else {
+    console.error('no active mainline; switch lock inactive');
+  }
+  if (untrackedCount > 0) {
+    console.error(`HARD FAIL: ${untrackedCount} file(s) are UNTRACKED — accept drift via 'ft accept-drift --reason ...' (Phase 3) or update node allowed_paths`);
+    process.exit(1);
+  }
+  if (backlogCount > 0) {
+    console.error(`WARN: ${backlogCount} file(s) belong to backlog; switch lock active, do not authorize until mainline closes`);
+  }
+  if (optimizeCount > 0) {
+    console.error(`WARN: ${optimizeCount} file(s) belong to optimize; P3 priority, defer until mainline+backlog close`);
+  }
+  process.exit(0);
+}
+
+function cmdAcceptDrift(root, flags) {
+  // Phase 3 placeholder. Refuses to write anything yet, but documents the future API.
+  // `root` is intentionally accepted for API symmetry with other commands and will be used in Phase 3.
+  void root;
+  const reason = one(flags, 'reason');
+  const filesFlag = one(flags, 'files');
+  if (!reason || !filesFlag) {
+    console.error('accept-drift requires --reason <text> --files <a,b,c>');
+    console.error('Phase 3 will write a drift-acceptance record to .governance/drift-acceptances.json');
+    console.error('Once accepted, ft drift-check treats the file as opt-in rather than UNTRACKED.');
+    process.exit(2);
+  }
+  console.error('accept-drift is not implemented yet (Phase 3 target).');
+  console.error('For now: either add the file to a node\'s allowed_paths via authorize, or proceed without drift-check enforcement.');
+  process.exit(2);
+}
+
+function relPath(root, file) {
+  const abs = path.isAbsolute(file) ? file : path.resolve(process.cwd(), file);
+  const rel = path.relative(root, abs);
+  return rel.split(path.sep).join('/');
+}
+
 function activeGateFromNode(program, node) {
   return {
     program,
@@ -3269,6 +3446,14 @@ function validateGovernance(root, flags = {}, args = []) {
     validateCapabilityCrossReference(allNodes, info, warnings);
     validatePortConflicts(root, warnings);
     validateDocConsistency(docPath, info, root, errors, warnings);
+    // Phase 2: mainline layering rules
+    if (fs.existsSync(path.join(root, '.governance', 'programs'))) {
+      const { resolved } = loadAllNodesResolved(root);
+      validateMainlineUnique(resolved, errors);
+      validateMainlineOrphan(resolved, errors);
+      validateBacklogSwitchLock(resolved, errors, warnings);
+      validateDepthConsistency(resolved, errors);
+    }
   }
 
   if (errors.length) {
