@@ -28,7 +28,7 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 |--------------|----------------|---------|
 | `/ft:init <program> --ref <node>` | `init <program> --ref <node>` | Create `.governance/programs/<program>/`, active gate files, and a function-tree-style root `FUNCTION_TREE.md` seeded from README feature lists, entrypoint-derived feature candidates, source modules, source TODOs, UI/page routes, navigation/menu links, API/OpenAPI routes, documented command examples, and common package/Cargo/Python/Go/Make/Just/Task commands |
 | `/ft:doc` | `doc` | Refresh root `FUNCTION_TREE.md` while preserving function-tree sections, project notes, and auto-discovered feature/roadmap candidates |
-| `/ft:new-node <program> <node-id>` | `new-node <program> <node-id> --title <text> --ref <node> [--type <kind>] [--owner-lane <lane>] [--parent <id>] [--freshness <policy>]` | Add a planning node and active gate; steward fields are optional and do not replace `status` |
+| `/ft:new-node <program> <node-id>` | `new-node <program> <node-id> --title <text> --ref <node> [--type <kind>] [--owner-lane <lane>] [--parent <id>] [--freshness <policy>] [--track <mainline\|backlog\|optimize\|untracked>] [--mainline-id <root-node-id>] [--depth <0\|1\|2\|99>]` | Add a planning node and active gate; steward fields are optional and do not replace `status`. `--track`/`--mainline-id`/`--depth` are optional mainline-layering fields (Phase 1) |
 | `/ft:observe <program> <node-id> --evidence <path-or-note>` | `observe <program> <node-id> --evidence <path-or-note>` | Record evidence with current `HEAD`; source edits stay unauthorized |
 | `/ft:authorize <program> <node-id>` | `authorize <program> <node-id> --allowed ... --non-goal ...` | Generate task card, scope, non-goals, and acceptance gates |
 | `/ft:transition <program> <node-id> --to <status>` | `transition <program> <node-id> --to <status>` | Move through legal states and block stale implementation approval |
@@ -39,6 +39,19 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 | `/ft:steward-sync` | `steward-sync` | Derive `.governance/steward/` relationship index, current next gates, evidence index, and track files from program nodes |
 | `/ft:install-guard` | `install-guard [--force]` | Install `.governance/guards/ft-scope-check.sh` and print hook snippet |
 | `/ft:repair` | `repair` | Rebuild active gates from program nodes and drop closed/archived gates |
+| `/ft:mainline` | `mainline` | Print the active mainline tree (depth=0 root + depth=1/2 children + backlog + switch-lock state). Use to verify work stays on the唯一 active mainline |
+| `/ft:locate <file>` | `locate <file>` | Resolve which track (mainline/backlog/optimize/untracked) a file belongs to via `.governance/file-to-track.json`. Use before edits to catch drift |
+| `/ft:map` | `map` | Rebuild the file-to-track reverse index and print coverage stats (files per track). Idempotent; safe to run anytime |
+
+## Mainline Layering (Phase 1)
+
+Nodes carry an optional `track` field (`mainline` / `backlog` / `optimize` / `untracked`) plus `depth` (0=root, 1/2=children, 99=non-mainline) and `mainline_id` (parent root's node id). Missing fields auto-resolve to `untracked` / depth 99 at read time — existing nodes need no migration.
+
+**Mainline uniqueness rule**: at most one active (non-closed) `track=mainline depth=0` node should exist. `ft mainline` warns when this is violated; Phase 2 will hard-enforce via `validate full`.
+
+**Switch-lock**: while an active mainline exists, backlog/optimize nodes cannot be authorized — `/ft:mainline` prints `切换锁：active` to surface this. Run `/ft:mainline` before starting work and `/ft:locate <file>` before editing to catch drift early.
+
+Phase 1 only adds read-only visibility (`ft mainline` / `ft locate` / `ft map`). Accept/reject drift prompts, validate-full mainline rules, and hook enforcement arrive in Phase 2-4.
 
 ## Hard Rules
 
@@ -66,6 +79,7 @@ The helper creates and validates:
 - `.governance/steward/evidence-index.md`
 - `.governance/steward/tracks/*.md`
 - `.governance/backups/FUNCTION_TREE.*.md`
+- `.governance/file-to-track.json` (reverse file→track index, incrementally rebuilt by `ft map` / `ft locate`)
 - `FUNCTION_TREE.md`
 
 ## References

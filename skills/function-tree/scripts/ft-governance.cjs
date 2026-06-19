@@ -126,6 +126,15 @@ function main() {
       case 'scope-check':
         scopeCheck(root, parsed.flags);
         break;
+      case 'mainline':
+        cmdMainline(root);
+        break;
+      case 'locate':
+        cmdLocate(root, parsed.args);
+        break;
+      case 'map':
+        cmdMap(root);
+        break;
       default:
         fail(`unknown command: ${parsed.command}`, 2);
     }
@@ -178,7 +187,7 @@ function usage(code) {
     'Usage:',
     '  ft-governance.cjs init <program> --ref <function-tree-node> [--description <text>] [--no-doc] [--root <repo>]',
     '  ft-governance.cjs doc [--root <repo>]',
-    '  ft-governance.cjs new-node <program> <node-id> --title <text> --ref <function-tree-node> [--type <kind>] [--owner-lane <lane>] [--parent <id>] [--freshness <policy>] [--root <repo>]',
+    '  ft-governance.cjs new-node <program> <node-id> --title <text> --ref <function-tree-node> [--type <kind>] [--owner-lane <lane>] [--parent <id>] [--freshness <policy>] [--track <mainline|backlog|optimize|untracked>] [--mainline-id <id>] [--depth <0|1|2|99>] [--root <repo>]',
     '  ft-governance.cjs observe <program> <node-id> --evidence <path-or-note> [--kind <kind>] [--note <text>] [--root <repo>]',
     '  ft-governance.cjs authorize <program> <node-id> --allowed <path> --non-goal <text> --commit-gate <text> --closeout-gate <text> [--root <repo>]',
     '  ft-governance.cjs transition <program> <node-id> --to <status> [--note <text>] [--blocker <text>] [--unblock-target-state <status>] [--root <repo>]',
@@ -191,6 +200,9 @@ function usage(code) {
     '  ft-governance.cjs steward-sync [--root <repo>]',
     '  ft-governance.cjs validate [full] [--steward] [--root <repo>]',
     '  ft-governance.cjs scope-check [--files a,b,c] [--root <repo>]',
+    '  ft-governance.cjs mainline [--root <repo>]',
+    '  ft-governance.cjs locate <file-path> [--root <repo>]',
+    '  ft-governance.cjs map [--root <repo>]',
   ].join('\n');
   console.log(text);
   process.exit(code);
@@ -295,6 +307,16 @@ function newNode(root, args, flags) {
     created_at: now,
     updated_at: now,
   };
+  // Phase 1: optional mainline layering fields. Only written when explicitly provided.
+  const trackRaw = one(flags, 'track');
+  if (trackRaw) node.track = normalizeTrack(trackRaw);
+  const mainlineIdRaw = one(flags, 'mainline-id');
+  if (mainlineIdRaw) node.mainline_id = mainlineIdRaw;
+  const depthRaw = one(flags, 'depth');
+  if (depthRaw !== undefined && depthRaw !== '') {
+    const n = Number(depthRaw);
+    if (Number.isInteger(n) && n >= 0) node.depth = n;
+  }
   nodes.push(node);
   saveNodes(nodesPath, nodes);
   appendTreeNode(programDir, node);
@@ -2932,6 +2954,259 @@ function normalizeStewardNodeType(value) {
     fail(`invalid steward node type: ${value}`, 2);
   }
   return normalized;
+}
+
+// ===== Mainline tracking (Phase 1) =====
+// Three optional node fields provide P0/P2/P3 layering, fully backward-compatible.
+// Missing fields are auto-filled with defaults at read time (never written back).
+
+const TRACK_VALUES = new Set(['mainline', 'backlog', 'optimize', 'untracked']);
+
+function normalizeTrack(value) {
+  const t = String(value || '').trim().toLowerCase();
+  return TRACK_VALUES.has(t) ? t : 'untracked';
+}
+
+function normalizeDepth(value, fallback) {
+  const n = Number(value);
+  if (Number.isInteger(n) && n >= 0) return n;
+  return fallback;
+}
+
+// Resolve canonical track/mainline_id/depth for a node, applying defaults.
+// node.raw is the original JSON entry; nodesById is an index built by loadAllNodes().
+function resolveMainlineFields(node, nodesById) {
+  const track = normalizeTrack(node.track);
+  const hasParent = node.parent && nodesById && nodesById.has(node.parent);
+  let depth;
+  if (track === 'backlog' || track === 'optimize') {
+    depth = normalizeDepth(node.depth, 99);
+    if (depth !== 99) depth = 99; // force 99 for non-mainline tracks
+  } else if (track === 'mainline') {
+    if (node.depth === 0 || (typeof node.depth === 'undefined' && !hasParent)) {
+      depth = 0;
+    } else {
+      depth = normalizeDepth(node.depth, hasParent ? 1 : 0);
+    }
+  } else {
+    // untracked
+    depth = normalizeDepth(node.depth, 99);
+  }
+  let mainlineId = node.mainline_id || null;
+  if (!mainlineId) {
+    if (track === 'mainline' && depth === 0) mainlineId = node.id;
+    else if (track === 'mainline' && hasParent) mainlineId = resolveMainlineRoot(node.parent, nodesById);
+  }
+  return { track, depth, mainline_id: mainlineId };
+}
+
+// Walk parent chain to find the depth=0 mainline root.
+function resolveMainlineRoot(startId, nodesById) {
+  const visited = new Set();
+  let cur = startId;
+  while (cur && nodesById.has(cur) && !visited.has(cur)) {
+    visited.add(cur);
+    const node = nodesById.get(cur);
+    const t = normalizeTrack(node.track);
+    if (t === 'mainline') {
+      const hasParent = node.parent && nodesById.has(node.parent);
+      if (node.depth === 0 || (typeof node.depth === 'undefined' && !hasParent)) return cur;
+    }
+    cur = node.parent;
+  }
+  return null;
+}
+
+// Active = non-closed, non-deferred
+function isActiveStatus(status) {
+  const s = String(status || '').toLowerCase();
+  return s && s !== 'closed' && s !== 'deferred';
+}
+
+function loadAllNodes(root) {
+  // Returns { byId, programs } where byId maps id -> { node, program }
+  const programsDir = path.join(root, '.governance', 'programs');
+  const byId = new Map();
+  const programs = [];
+  if (!fs.existsSync(programsDir)) return { byId, programs };
+  for (const program of fs.readdirSync(programsDir)) {
+    const nodesPath = path.join(programsDir, program, 'nodes.json');
+    if (!fs.existsSync(nodesPath)) continue;
+    const nodes = loadNodes(nodesPath);
+    programs.push({ program, nodes });
+    for (const node of nodes) {
+      if (node && node.id) byId.set(node.id, { node, program });
+    }
+  }
+  return { byId, programs };
+}
+
+// Build a unified node view with resolved mainline fields.
+function loadAllNodesResolved(root) {
+  const { byId, programs } = loadAllNodes(root);
+  const resolved = [];
+  for (const { program, nodes } of programs) {
+    for (const node of nodes) {
+      const fields = resolveMainlineFields(node, byId);
+      resolved.push({ program, node, ...fields });
+    }
+  }
+  return { resolved, byId };
+}
+
+function buildFileToTrackIndex(root) {
+  // Reads all nodes' allowed_paths and produces a reverse index:
+  //   { "<relpath>": { track, mainline_id, depth, node_id, program } }
+  // untracked files are not listed (absence == untracked).
+  const indexPath = path.join(root, '.governance', 'file-to-track.json');
+  const cached = fs.existsSync(indexPath) ? readJsonSafe(indexPath) : { files: {} };
+  const cachedFiles = (cached && cached.files) || {};
+
+  const { resolved } = loadAllNodesResolved(root);
+  const index = { schema_version: 1, generated_at: new Date().toISOString(), files: {} };
+  const touchedFiles = new Set();
+
+  for (const entry of resolved) {
+    const { node, track, mainline_id, depth, program } = entry;
+    if (!node.allowed_paths || !Array.isArray(node.allowed_paths)) continue;
+    for (const p of node.allowed_paths) {
+      const rel = String(p || '').trim();
+      if (!rel) continue;
+      touchedFiles.add(rel);
+      // Skip cache reuse for non-active nodes (state may change). Active nodes
+      // with unchanged allowed_paths reuse cached metadata to keep rebuild fast.
+      const cacheKey = `${node.id}:${node.updated_at || ''}:${track}:${depth}`;
+      const cachedEntry = cachedFiles[rel];
+      if (cachedEntry && cachedEntry._cache_key === cacheKey) {
+        index.files[rel] = { ...cachedEntry };
+        delete index.files[rel]._cache_key;
+        index.files[rel]._cache_key = cacheKey;
+        continue;
+      }
+      index.files[rel] = {
+        track,
+        mainline_id,
+        depth,
+        node_id: node.id,
+        program,
+        _cache_key: cacheKey,
+      };
+    }
+  }
+
+  writeJson(indexPath, index);
+  return index;
+}
+
+function readJsonSafe(p) {
+  try { return readJson(p); } catch (_) { return null; }
+}
+
+function cmdMainline(root) {
+  const { resolved } = loadAllNodesResolved(root);
+  if (!resolved.length) {
+    console.log('no governance nodes found; run `/ft:init` first');
+    return;
+  }
+  // Find active mainline root(s)
+  const mainlineRoots = resolved.filter((e) => e.track === 'mainline' && e.depth === 0);
+  const activeRoots = mainlineRoots.filter((e) => isActiveStatus(e.node.status));
+  const backlogNodes = resolved.filter((e) => e.track === 'backlog');
+
+  if (!activeRoots.length) {
+    console.log('no active mainline node (depth=0, track=mainline) found.');
+    console.log('所有节点 track=untracked 或已 closeout。');
+    if (mainlineRoots.length) {
+      console.log(`\n存在 ${mainlineRoots.length} 条已关闭的主线（参考）：`);
+      for (const r of mainlineRoots) {
+        console.log(`  - ${r.node.id} ${r.node.title || ''} [${r.node.status}]`);
+      }
+    }
+    return;
+  }
+
+  if (activeRoots.length > 1) {
+    console.log(`WARN: 检测到 ${activeRoots.length} 条并行主线（违反主线唯一性，Phase 2 将强制校验）：`);
+    for (const r of activeRoots) console.log(`  - ${r.node.id} ${r.node.title || ''}`);
+    console.log('');
+  }
+
+  for (const r of activeRoots) {
+    console.log(`当前主线：${r.node.id} ${r.node.title || ''} [${r.node.status}]`);
+    const children1 = resolved.filter((e) => e.track === 'mainline' && e.depth === 1 && e.mainline_id === r.node.id);
+    const children2 = resolved.filter((e) => e.track === 'mainline' && e.depth === 2 && e.mainline_id === r.node.id);
+    if (children1.length) {
+      console.log('  depth=1 子任务：');
+      for (const c of children1) {
+        const marker = c.node.status === 'landed' ? '✅ landed'
+          : c.node.status === 'approved' || c.node.source_edits_authorized ? '🔵 authorized'
+          : c.node.status === 'planning' ? '⚪ planning'
+          : `[${c.node.status}]`;
+        console.log(`    - ${c.node.id} ${c.node.title || ''} ${marker}`);
+      }
+    }
+    if (children2.length) {
+      console.log('  depth=2 子任务：');
+      for (const c of children2) {
+        console.log(`    - ${c.node.id} ${c.node.title || ''} [${c.node.status}]`);
+      }
+    }
+    const myBacklog = backlogNodes.filter((e) => e.mainline_id === r.node.id);
+    if (myBacklog.length) {
+      console.log('  关联 Backlog（未达准入条件，禁止启动）：');
+      for (const b of myBacklog) console.log(`    - ${b.node.id} ${b.node.title || ''} [${b.node.status}]`);
+    }
+    console.log('  切换锁：active（mainline 未闭合，backlog/optimize 任务不可授权）');
+    console.log('');
+  }
+}
+
+function cmdLocate(root, args) {
+  const target = args[0];
+  if (!target) fail('locate requires <file-path>', 2);
+  const index = buildFileToTrackIndex(root);
+  // Normalize target to repo-relative
+  const abs = path.isAbsolute(target) ? target : path.resolve(process.cwd(), target);
+  const repoAbs = path.resolve(root);
+  let rel = abs.startsWith(repoAbs) ? abs.slice(repoAbs.length).replace(/^[/\\]+/, '') : target;
+  rel = rel.replace(/\\/g, '/');
+
+  const entry = index.files[rel];
+  if (!entry) {
+    const { resolved } = loadAllNodesResolved(root);
+    const activeRoots = resolved.filter((e) => e.track === 'mainline' && e.depth === 0 && isActiveStatus(e.node.status));
+    console.log(`File: ${rel}`);
+    console.log('Track: UNTRACKED ⚠️');
+    console.log('原因：该文件未挂接到任何 active 节点的 allowed_paths');
+    if (activeRoots.length) {
+      console.log(`当前主线：${activeRoots[0].node.id} ${activeRoots[0].node.title || ''}`);
+    }
+    console.log('提示：此修改属于支线治理，建议进入 Backlog');
+    console.log('  （Phase 3 将支持 ft accept-drift --reason "..." 留痕）');
+    return;
+  }
+  const { resolved, byId } = loadAllNodesResolved(root);
+  const nodeRec = resolved.find((r) => r.node.id === entry.node_id);
+  const mainlineRoot = entry.mainline_id && byId.has(entry.mainline_id) ? byId.get(entry.mainline_id).node : null;
+  console.log(`File: ${rel}`);
+  console.log(`Track: ${entry.track} ${entry.track === 'mainline' ? '✅' : ''}`);
+  if (mainlineRoot) console.log(`Mainline: ${mainlineRoot.id} ${mainlineRoot.title || ''} [${mainlineRoot.status}]`);
+  console.log(`Depth: ${entry.depth} ${entry.depth === 0 ? '(主线根节点)' : entry.depth === 1 ? '(一级子任务)' : entry.depth === 2 ? '(二级子任务)' : '(非主线)'}`);
+  if (nodeRec) console.log(`Node: ${nodeRec.node.id} ${nodeRec.node.title || ''}`);
+}
+
+function cmdMap(root) {
+  const index = buildFileToTrackIndex(root);
+  const counts = { mainline: 0, backlog: 0, optimize: 0 };
+  for (const k of Object.keys(index.files)) {
+    const t = index.files[k].track;
+    if (counts[t] !== undefined) counts[t]++;
+  }
+  console.log(`indexed ${Object.keys(index.files).length} files:`);
+  console.log(`  mainline: ${counts.mainline}`);
+  console.log(`  backlog:  ${counts.backlog}`);
+  console.log(`  optimize: ${counts.optimize}`);
+  console.log(`path: ${path.join(root, '.governance', 'file-to-track.json')}`);
 }
 
 function activeGateFromNode(program, node) {
