@@ -33,6 +33,23 @@ const STEWARD_NODE_TYPES = new Set([
   'external',
 ]);
 
+// Business-friendly aliases that map to governance types. The state machine
+// only cares about the 6 steward types above, but users naturally want to tag
+// nodes with `feature`, `capability`, `epic`, etc. These aliases are normalized
+// to the canonical steward type before validation, so the underlying JSON
+// stays compliant with older readers.
+const NODE_TYPE_ALIASES = {
+  feature: 'external',
+  capability: 'external',
+  epic: 'external',
+  module: 'external',
+  component: 'external',
+  bug: 'external',
+  task: 'decision',
+  refactor: 'external',
+  spike: 'evidence',
+};
+
 const STEWARD_BOUNDARIES = [
   {
     system: 'context-mode',
@@ -90,6 +107,12 @@ function main() {
       case 'new-node':
         newNode(root, parsed.args, parsed.flags);
         break;
+      case 'new-node-batch':
+        newNodeBatch(root, parsed.args, parsed.flags);
+        break;
+      case 'reparent':
+        reparentNode(root, parsed.args, parsed.flags);
+        break;
       case 'observe':
         observeNode(root, parsed.args, parsed.flags);
         break;
@@ -144,6 +167,15 @@ function main() {
       case 'revoke-drift':
         cmdRevokeDrift(root, parsed.flags, parsed.args);
         break;
+      case 'config':
+        cmdConfig(root, parsed.args, parsed.flags);
+        break;
+      case 'session-start':
+        cmdSessionStart(root);
+        break;
+      case 'pre-edit':
+        cmdPreEdit(root, parsed.flags);
+        break;
       default:
         fail(`unknown command: ${parsed.command}`, 2);
     }
@@ -197,6 +229,11 @@ function usage(code) {
     '  ft-governance.cjs init <program> --ref <function-tree-node> [--description <text>] [--no-doc] [--root <repo>]',
     '  ft-governance.cjs doc [--root <repo>]',
     '  ft-governance.cjs new-node <program> <node-id> --title <text> --ref <function-tree-node> [--type <kind>] [--owner-lane <lane>] [--parent <id>] [--freshness <policy>] [--track <mainline|backlog|optimize|untracked>] [--mainline-id <id>] [--depth <0|1|2|99>] [--root <repo>]',
+    '       --type accepts: feature, capability, epic, module, component, bug, task, refactor, spike, evidence, decision, authorization, implementation, closeout, external',
+    '  ft-governance.cjs new-node-batch <program> --from-dirs <dir> [--id-prefix <text>] [--pattern <glob>] [--parent <id>] [--track <t>] [--mainline-id <id>] [--depth <n>] [--type <kind>] [--dry-run] [--root <repo>]',
+    '       walks <dir> one level deep and creates one node per subdir; node id = <id-prefix><subdir>, title = subdir, ref = <dir>/<subdir>',
+    '  ft-governance.cjs reparent <program> <node-id> --parent <id> [--mainline-id <id>] [--depth <n>] [--track <t>] [--root <repo>]',
+    '       atomically reparent an existing node without hand-editing nodes.json (fixes parallel-mainline violations)',
     '  ft-governance.cjs observe <program> <node-id> --evidence <path-or-note> [--kind <kind>] [--note <text>] [--root <repo>]',
     '  ft-governance.cjs authorize <program> <node-id> --allowed <path> --non-goal <text> --commit-gate <text> --closeout-gate <text> [--root <repo>]',
     '  ft-governance.cjs transition <program> <node-id> --to <status> [--note <text>] [--blocker <text>] [--unblock-target-state <status>] [--root <repo>]',
@@ -216,6 +253,9 @@ function usage(code) {
     '  ft-governance.cjs accept-drift --reason <text> --files <a,b,c> [--expires <spec>] [--mainline <id|none>] [--by <name>] [--root <repo>]',
     '       --expires default 30d; pass "0" for permanent; format: <N><s|m|h|d|w>',
     '  ft-governance.cjs revoke-drift --id <acceptance-id> [--root <repo>]',
+    '  ft-governance.cjs config [list|get|set] [--key <name>] [--value <text>] [--root <repo>]',
+    '  ft-governance.cjs session-start [--root <repo>]',
+    '  ft-governance.cjs pre-edit --files <a,b,c> [--root <repo>]',
   ].join('\n');
   console.log(text);
   process.exit(code);
@@ -336,6 +376,130 @@ function newNode(root, args, flags) {
   upsertActiveGate(root, program, node);
   syncActiveGates(root);
   console.log(`created node: ${program}/${id}`);
+}
+
+// Batch create nodes from a directory tree. Walks <from-dirs> one level deep
+// and creates one node per immediate subdir. Skips dirs already present as
+// nodes. Designed for monorepos / C++ codebases where each subdir of
+// src/core/algorithm/ is a distinct capability.
+function newNodeBatch(root, args, flags) {
+  const program = args[0];
+  if (!program) fail('new-node-batch requires <program>', 2);
+  const fromDirs = one(flags, 'from-dirs');
+  if (!fromDirs) fail('new-node-batch requires --from-dirs <dir>', 2);
+  const programDir = requireProgramDir(root, program);
+  const nodesPath = path.join(programDir, 'nodes.json');
+  const nodes = loadNodes(nodesPath);
+  const existing = new Set(nodes.map((n) => n.id));
+
+  const absRoot = path.resolve(root, fromDirs);
+  if (!fs.existsSync(absRoot)) fail(`--from-dirs not found: ${absRoot}`, 2);
+
+  const idPrefix = one(flags, 'id-prefix') || '';
+  const pattern = one(flags, 'pattern') || '*';
+  const parent = one(flags, 'parent') || '';
+  const trackRaw = one(flags, 'track');
+  const mainlineId = one(flags, 'mainline-id');
+  const depthRaw = one(flags, 'depth');
+  const typeRaw = one(flags, 'type') || 'external';
+  const dryRun = Boolean(flags['dry-run']);
+
+  const subdirs = fs
+    .readdirSync(absRoot, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .filter((name) => minimatchSimple(name, pattern))
+    .sort();
+
+  if (!subdirs.length) {
+    console.log(`no subdirectories matched under ${absRoot}`);
+    return;
+  }
+
+  const created = [];
+  const skipped = [];
+  const now = new Date().toISOString();
+  for (const name of subdirs) {
+    const id = `${idPrefix}${name.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+    if (existing.has(id)) {
+      skipped.push(id);
+      continue;
+    }
+    const node = {
+      id,
+      title: name,
+      node_type: normalizeStewardNodeType(typeRaw),
+      owner_lane: program,
+      parent,
+      status: 'planning',
+      function_tree_ref: path.join(fromDirs, name),
+      current_head: gitHead(root),
+      freshness: 'current-head',
+      source_edits_authorized: false,
+      evidence: [],
+      allowed_paths: [],
+      forbidden_paths: [],
+      non_goals: [],
+      next_gate: 'collect baseline evidence',
+      blocker_reason: null,
+      unblock_target_state: null,
+      created_at: now,
+      updated_at: now,
+    };
+    if (trackRaw) node.track = normalizeTrack(trackRaw);
+    if (mainlineId) node.mainline_id = mainlineId;
+    if (depthRaw !== undefined && depthRaw !== '') {
+      const n = Number(depthRaw);
+      if (Number.isInteger(n) && n >= 0) node.depth = n;
+    }
+    nodes.push(node);
+    existing.add(id);
+    created.push(id);
+    if (!dryRun) {
+      appendTreeNode(programDir, node);
+      upsertActiveGate(root, program, node);
+    }
+  }
+
+  if (dryRun) {
+    console.log(`[dry-run] would create ${created.length} node(s): ${created.join(', ')}`);
+    if (skipped.length) console.log(`[dry-run] skipped ${skipped.length} existing: ${skipped.join(', ')}`);
+    return;
+  }
+
+  saveNodes(nodesPath, nodes);
+  syncActiveGates(root);
+  console.log(`created ${created.length} node(s): ${created.join(', ')}`);
+  if (skipped.length) console.log(`skipped ${skipped.length} existing: ${skipped.join(', ')}`);
+}
+
+// Reparent an existing node without hand-editing nodes.json. Atomically updates
+// parent / track / depth / mainline_id, then re-syncs gates. Primary use case:
+// fixing a parallel depth=0 mainline violation without a manual JSON edit.
+function reparentNode(root, args, flags) {
+  const { program, id, nodesPath, nodes, node } = loadTargetNode(root, args, 'reparent');
+  const parent = one(flags, 'parent');
+  const mainlineId = one(flags, 'mainline-id');
+  const depthRaw = one(flags, 'depth');
+  const trackRaw = one(flags, 'track');
+  if (!parent && !mainlineId && depthRaw === undefined && !trackRaw) {
+    fail('reparent requires at least one of --parent / --mainline-id / --depth / --track', 2);
+  }
+
+  if (parent !== undefined) node.parent = parent;
+  if (mainlineId !== undefined) node.mainline_id = mainlineId || '';
+  if (depthRaw !== undefined && depthRaw !== '') {
+    const n = Number(depthRaw);
+    if (!Number.isInteger(n) || n < 0) fail(`invalid --depth: ${depthRaw}`, 2);
+    node.depth = n;
+  }
+  if (trackRaw) node.track = normalizeTrack(trackRaw);
+  node.updated_at = new Date().toISOString();
+
+  saveNodes(nodesPath, nodes);
+  upsertActiveGate(root, program, node);
+  syncActiveGates(root);
+  console.log(`reparented: ${program}/${id} (parent=${node.parent || '-'}, track=${node.track || 'untracked'}, depth=${node.depth !== undefined ? node.depth : 'inherit'})`);
 }
 
 function observeNode(root, args, flags) {
@@ -2712,12 +2876,20 @@ function formatList(values) {
 }
 
 function installGuard(root, flags) {
-  const guardPath = path.join(root, '.governance', 'guards', 'ft-scope-check.sh');
+  const guardsDir = path.join(root, '.governance', 'guards');
+  ensureDir(guardsDir);
+  const guardPath = path.join(guardsDir, 'ft-scope-check.sh');
+  const preCommitPath = path.join(guardsDir, 'pre-commit');
   if (fs.existsSync(guardPath) && !flags.force) {
     fail(`${rel(root, guardPath)} already exists; rerun with --force to overwrite`, 2);
   }
+  if (fs.existsSync(preCommitPath) && !flags.force) {
+    fail(`${rel(root, preCommitPath)} already exists; rerun with --force to overwrite`, 2);
+  }
   const scriptPath = path.join(skillDir(), 'scripts', 'ft-governance.cjs');
-  const content = [
+
+  // PostToolUse guard (existing) — runs scope-check after Edit/Write/MultiEdit.
+  const guardContent = [
     '#!/usr/bin/env bash',
     'set -euo pipefail',
     '',
@@ -2726,17 +2898,80 @@ function installGuard(root, flags) {
     'exec node "$FT_GOVERNANCE_SCRIPT" scope-check --root "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" "$@"',
     '',
   ].join('\n');
-  writeFile(guardPath, content);
+  writeFile(guardPath, guardContent);
   fs.chmodSync(guardPath, 0o755);
+
+  // pre-commit guard (Phase 4) — runs drift-check --staged; exit code honors drift_check_mode.
+  // hard (default): UNTRACKED w/o acceptance -> exit 1, blocks commit.
+  // soft: prints warning, exits 0.
+  // off: skips entirely.
+  const preCommitContent = [
+    '#!/usr/bin/env bash',
+    'set -euo pipefail',
+    '',
+    `FT_GOVERNANCE_SCRIPT=${shellQuote(scriptPath)}`,
+    'export FT_GOVERNANCE_SCRIPT',
+    'REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"',
+    'MODE="$(node "$FT_GOVERNANCE_SCRIPT" config get --key drift_check_mode --root "$REPO_ROOT" 2>/dev/null || echo hard)"',
+    'if [[ "$MODE" == "off" ]]; then',
+    '  echo "[ft] drift_check_mode=off, skipping drift-check" >&2',
+    '  exit 0',
+    'fi',
+    'OUT_FILE="$(mktemp)"',
+    'set +e',
+    'node "$FT_GOVERNANCE_SCRIPT" drift-check --staged --root "$REPO_ROOT" >"$OUT_FILE" 2>&1',
+    'STATUS=$?',
+    'set -e',
+    'cat "$OUT_FILE" >&2',
+    'rm -f "$OUT_FILE"',
+    'if [[ "$STATUS" -ne 0 ]]; then',
+    '  if [[ "$MODE" == "soft" ]]; then',
+    '    echo "[ft] drift-check found UNTRACKED files (soft mode, commit allowed)" >&2',
+    '    exit 0',
+    '  fi',
+    '  echo "[ft] commit blocked: UNTRACKED files without effective drift acceptance" >&2',
+    '  echo "[ft] fix: ft accept-drift --reason ... --files ...  OR  ft authorize to add to backlog" >&2',
+    '  exit 1',
+    'fi',
+    'exit 0',
+    '',
+  ].join('\n');
+  writeFile(preCommitPath, preCommitContent);
+  fs.chmodSync(preCommitPath, 0o755);
+
   console.log([
-    `installed guard: ${rel(root, guardPath)}`,
-    'hook snippet:',
+    `installed guards:`,
+    `  ${rel(root, guardPath)}        (PostToolUse: scope-check)`,
+    `  ${rel(root, preCommitPath)}  (pre-commit: drift-check --staged)`,
+    '',
+    'integration options (pick one):',
+    '',
+    'A. git core.hooksPath (simplest):',
+    '  git config core.hooksPath .governance/guards',
+    '  # note: this makes .governance/guards the hooks dir for ALL hooks;',
+    '  # only pre-commit is shipped, others (pre-push, etc.) will be silent',
+    '',
+    'B. symlink into .git/hooks (only pre-commit):',
+    '  ln -sf ../../.governance/guards/pre-commit .git/hooks/pre-commit',
+    '',
+    'C. husky / lefthook (recommended for shared repos):',
+    '  # husky: add to .husky/pre-commit:',
+    '  #   bash .governance/guards/pre-commit',
+    '  # lefthook.yml: pre-commit: commands: ft-drift:',
+    '  #     run: bash .governance/guards/pre-commit',
+    '',
+    'Claude Code PostToolUse snippet (add to .claude/settings.json):',
     '{',
     '  "hooks": {',
     '    "PostToolUse": [{',
     '      "matcher": "Edit|MultiEdit|Write",',
     '      "command": "bash .governance/guards/ft-scope-check.sh",',
     '      "description": "Check file edits against active FUNCTION_TREE governance authorization"',
+    '    }],',
+    '    "PreToolUse": [{',
+    '      "matcher": "Edit|MultiEdit|Write",',
+    '      "command": "node $FT_GOVERNANCE_SCRIPT pre-edit --files {file}",',
+    '      "description": "Phase 4 drift-check + accept-drift suggestion before edit"',
     '    }]',
     '  }',
     '}',
@@ -2962,11 +3197,15 @@ function stewardTypeFor(node) {
 }
 
 function normalizeStewardNodeType(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (!STEWARD_NODE_TYPES.has(normalized)) {
-    fail(`invalid steward node type: ${value}`, 2);
+  const raw = String(value || '').trim().toLowerCase();
+  if (NODE_TYPE_ALIASES[raw]) return NODE_TYPE_ALIASES[raw];
+  if (!STEWARD_NODE_TYPES.has(raw)) {
+    fail(
+      `invalid steward node type: ${value}\n  valid: feature, capability, epic, module, component, bug, task, refactor, spike, evidence, decision, authorization, implementation, closeout, external`,
+      2,
+    );
   }
-  return normalized;
+  return raw;
 }
 
 // ===== Mainline tracking (Phase 1) =====
@@ -3175,6 +3414,321 @@ function newAcceptanceId(existing) {
   return `${prefix}${String(max + 1).padStart(3, '0')}`;
 }
 
+// Phase 4 governance config — file-level defaults overridable by env vars.
+// Path: <root>/.governance/config.json
+// Schema v1: {
+//   drift_check_mode: 'hard' | 'soft' | 'off',  // default 'hard'
+//   hooks_mode: 'on' | 'off',                    // default 'on' (controls SessionStart/pre-edit output)
+//   mainline_warning: true | false,              // default true
+//   auto_accept_suggest: true | false            // default true (pre-edit suggests accept-drift cmd)
+// }
+// Env overrides (take precedence over file when set):
+//   FT_DRIFT_CHECK_MODE  = hard | soft | off
+//   FT_HOOKS_MODE        = on | off
+//   FT_MAINLINE_WARNING  = 1 | 0
+//   FT_AUTO_ACCEPT_SUGGEST = 1 | 0
+function governanceConfigPath(root) {
+  return path.join(root, '.governance', 'config.json');
+}
+
+const DEFAULT_CONFIG = {
+  drift_check_mode: 'hard',
+  hooks_mode: 'on',
+  mainline_warning: true,
+  auto_accept_suggest: true,
+};
+
+const VALID_DRIFT_MODES = new Set(['hard', 'soft', 'off']);
+const VALID_HOOK_MODES = new Set(['on', 'off']);
+
+function loadConfig(root) {
+  const merged = Object.assign({}, DEFAULT_CONFIG);
+  const raw = readJsonSafe(governanceConfigPath(root));
+  if (raw && typeof raw === 'object') {
+    for (const k of Object.keys(DEFAULT_CONFIG)) {
+      if (k in raw && raw[k] != null) merged[k] = raw[k];
+    }
+  }
+  if (process.env.FT_DRIFT_CHECK_MODE && VALID_DRIFT_MODES.has(process.env.FT_DRIFT_CHECK_MODE)) {
+    merged.drift_check_mode = process.env.FT_DRIFT_CHECK_MODE;
+  }
+  if (process.env.FT_HOOKS_MODE && VALID_HOOK_MODES.has(process.env.FT_HOOKS_MODE)) {
+    merged.hooks_mode = process.env.FT_HOOKS_MODE;
+  }
+  if (process.env.FT_MAINLINE_WARNING != null) {
+    merged.mainline_warning = process.env.FT_MAINLINE_WARNING === '1' || process.env.FT_MAINLINE_WARNING === 'true';
+  }
+  if (process.env.FT_AUTO_ACCEPT_SUGGEST != null) {
+    merged.auto_accept_suggest = process.env.FT_AUTO_ACCEPT_SUGGEST === '1' || process.env.FT_AUTO_ACCEPT_SUGGEST === 'true';
+  }
+  return merged;
+}
+
+function saveConfig(root, config) {
+  const payload = {
+    version: 1,
+    generated_at: new Date().toISOString(),
+    ...config,
+  };
+  writeJson(governanceConfigPath(root), payload);
+}
+
+function cmdConfig(root, args, flags) {
+  const sub = args[0] || 'list';
+  const key = one(flags, 'key') || (args[1] && !args[0].startsWith('-') ? args[1] : null);
+  const value = one(flags, 'value');
+
+  if (sub === 'list') {
+    const config = loadConfig(root);
+    console.log(JSON.stringify(config, null, 2));
+    return;
+  }
+  if (sub === 'get') {
+    if (!key) { console.error('config get requires --key <name>'); process.exit(2); }
+    const config = loadConfig(root);
+    console.log(String(config[key] ?? ''));
+    return;
+  }
+  if (sub === 'set') {
+    if (!key) { console.error('config set requires --key <name>'); process.exit(2); }
+    if (value == null) { console.error('config set requires --value <text>'); process.exit(2); }
+    let normalized = value;
+    if (key === 'drift_check_mode' || key === 'hooks_mode') {
+      normalized = value.toLowerCase();
+      if (key === 'drift_check_mode' && !VALID_DRIFT_MODES.has(normalized)) {
+        console.error(`invalid drift_check_mode: ${value}; valid: hard, soft, off`); process.exit(2);
+      }
+      if (key === 'hooks_mode' && !VALID_HOOK_MODES.has(normalized)) {
+        console.error(`invalid hooks_mode: ${value}; valid: on, off`); process.exit(2);
+      }
+    } else if (key === 'mainline_warning' || key === 'auto_accept_suggest') {
+      normalized = (value === '1' || value.toLowerCase() === 'true');
+    } else if (!Object.prototype.hasOwnProperty.call(DEFAULT_CONFIG, key)) {
+      console.error(`unknown config key: ${key}; valid: ${Object.keys(DEFAULT_CONFIG).join(', ')}`); process.exit(2);
+    }
+    const config = loadConfig(root);
+    config[key] = normalized;
+    saveConfig(root, config);
+    console.log(`config ${key} = ${normalized}`);
+    return;
+  }
+  console.error(`unknown config subcommand: ${sub}; valid: list, get, set`);
+  process.exit(2);
+}
+
+// Phase 4 session-start — emits a compact summary suitable for injection as
+// Claude Code SessionStart hook additionalContext. Output goes to stdout
+// (hook captures it); human-readable lines, no ANSI.
+// Sections:
+//   - active mainline (or "no active mainline")
+//   - worktree drift counts (mainline/backlog/optimize/accepted-drift/untracked)
+//   - active acceptances count + nearest expiry
+//   - next gate suggestion
+function cmdSessionStart(root) {
+  const config = loadConfig(root);
+  const lines = [];
+  lines.push('[function-tree session-start]');
+
+  const programsDir = path.join(root, '.governance', 'programs');
+  if (!fs.existsSync(programsDir)) {
+    lines.push('no governance programs initialized; run `ft init <program> --ref <node>` to start');
+    console.log(lines.join('\n'));
+    return;
+  }
+
+  const { resolved } = loadAllNodesResolved(root);
+  const mainline = resolved.find((e) => e.track === 'mainline' && e.depth === 0 && isActiveStatus(e.node.status));
+  const mainlineId = mainline ? String(mainline.node.id) : null;
+
+  lines.push('');
+  if (mainline) {
+    lines.push(`active mainline: ${mainline.program}/${mainline.node.id} — ${mainline.node.title || '(untitled)'}`);
+    const children = resolved.filter((e) => e.track === 'mainline' && (e.depth === 1 || e.depth === 2) && isActiveStatus(e.node.status));
+    lines.push(`  active mainline descendants: ${children.length}`);
+  } else {
+    lines.push('active mainline: (none — switch lock inactive, backlog can be authorized)');
+  }
+
+  // Drift scan via `git status --porcelain` (fast path).
+  const files = listWorktreeFiles(root);
+  let ml = 0, bl = 0, op = 0, ac = 0, ut = 0;
+  const untrackedFiles = [];
+  if (files.length) {
+    buildFileToTrackIndex(root);
+    const index = readJsonSafe(path.join(root, '.governance', 'file-to-track.json')) || { files: {} };
+    const acceptancesData = loadDriftAcceptances(root);
+    const nowMs = Date.now();
+    const findAcc = (rel) => {
+      for (const a of acceptancesData.acceptances) {
+        if (!isAcceptanceEffective(a, mainlineId, nowMs)) continue;
+        if (Array.isArray(a.files) && a.files.includes(rel)) return a;
+      }
+      return null;
+    };
+    for (const f of files) {
+      const rel = relPath(root, f);
+      const entry = index.files[rel];
+      const track = entry?.track || 'untracked';
+      if (track === 'mainline') ml++;
+      else if (track === 'backlog') bl++;
+      else if (track === 'optimize') op++;
+      else if (track === 'untracked') {
+        if (findAcc(rel)) ac++;
+        else { ut++; untrackedFiles.push(rel); }
+      }
+    }
+  }
+
+  lines.push('');
+  lines.push(`worktree drift (git status, ${files.length} changed): mainline=${ml} backlog=${bl} optimize=${op} accepted-drift=${ac} untracked=${ut}`);
+  if (untrackedFiles.length) {
+    const preview = untrackedFiles.slice(0, 5).map((f) => `  - ${f}`).join('\n');
+    const more = untrackedFiles.length > 5 ? `\n  - ... and ${untrackedFiles.length - 5} more` : '';
+    lines.push(`untracked preview:`);
+    lines.push(preview + more);
+  }
+
+  // Active acceptances summary (status='active', not bound to current mainline necessarily).
+  const acceptancesData = loadDriftAcceptances(root);
+  const activeAcc = acceptancesData.acceptances.filter((a) => a && a.status === 'active');
+  lines.push('');
+  if (activeAcc.length) {
+    let nearest = null;
+    for (const a of activeAcc) {
+      if (a.expires_at == null) continue;
+      const exp = Date.parse(a.expires_at);
+      if (!Number.isNaN(exp) && (nearest == null || exp < nearest)) nearest = exp;
+    }
+    const nearestTxt = nearest == null
+      ? '(all permanent or malformed)'
+      : new Date(nearest).toISOString();
+    lines.push(`active acceptances: ${activeAcc.length} (nearest expiry: ${nearestTxt})`);
+  } else {
+    lines.push('active acceptances: 0');
+  }
+
+  // Next-gate suggestion based on state.
+  lines.push('');
+  if (config.hooks_mode === 'off') {
+    lines.push('hooks_mode=off — SessionStart/pre-edit/pre-commit hooks inactive');
+  }
+  if (ut > 0) {
+    if (config.drift_check_mode === 'hard') {
+      lines.push(`NEXT: ${ut} file(s) UNTRACKED will block commit (hard mode); run \`ft accept-drift --reason <text> --files <list>\` or add to a backlog node`);
+    } else if (config.drift_check_mode === 'soft') {
+      lines.push(`NEXT: ${ut} file(s) UNTRACKED (soft mode — commit allowed but review recommended); run \`ft accept-drift\` or \`ft authorize\``);
+    } else {
+      lines.push(`NEXT: drift_check_mode=off; UNTRACKED files present but enforcement disabled`);
+    }
+  } else if (ml === 0 && files.length === 0) {
+    lines.push('NEXT: clean tree on the active mainline; consider `ft gate` for the next gate or `ft status` for program overview');
+  } else {
+    lines.push('NEXT: no UNTRACKED drift; continue mainline work or run `ft gate` for next gate');
+  }
+
+  console.log(lines.join('\n'));
+}
+
+// Phase 4 pre-edit — called by Claude Code PreToolUse hook before Edit/Write/MultiEdit.
+// Input: --files <path1,path2,...> (the files the tool is about to modify).
+// Output: Claude Code hook JSON on stdout:
+//   {"decision": "approve"}                                   — all good
+//   {"decision": "block", "reason": "...", "context": {...}}  — hard mode blocks
+//   {"decision": "approve", "context": {"warning": "..."}}    — soft mode warns
+// Exit codes align with drift-check (0 = approve, 1 = block) so the same
+// command can be invoked from non-Claude contexts (e.g. editor plugins).
+function cmdPreEdit(root, flags) {
+  const filesFlag = one(flags, 'files');
+  if (!filesFlag) {
+    console.log(JSON.stringify({ decision: 'approve', reason: 'pre-edit: no --files provided, skipping' }));
+    return;
+  }
+  const files = filesFlag.split(',').map((s) => s.trim()).filter(Boolean);
+  const config = loadConfig(root);
+  if (config.hooks_mode === 'off') {
+    console.log(JSON.stringify({ decision: 'approve', reason: 'hooks_mode=off' }));
+    return;
+  }
+
+  // If no governance programs, nothing to check against.
+  if (!fs.existsSync(path.join(root, '.governance', 'programs'))) {
+    console.log(JSON.stringify({ decision: 'approve', reason: 'no governance programs initialized' }));
+    return;
+  }
+
+  buildFileToTrackIndex(root);
+  const index = readJsonSafe(path.join(root, '.governance', 'file-to-track.json')) || { files: {} };
+  const { resolved } = loadAllNodesResolved(root);
+  const mainline = resolved.find((e) => e.track === 'mainline' && e.depth === 0 && isActiveStatus(e.node.status));
+  const mainlineId = mainline ? String(mainline.node.id) : null;
+  const acceptancesData = loadDriftAcceptances(root);
+  const nowMs = Date.now();
+  const findAcc = (rel) => {
+    for (const a of acceptancesData.acceptances) {
+      if (!isAcceptanceEffective(a, mainlineId, nowMs)) continue;
+      if (Array.isArray(a.files) && a.files.includes(rel)) return a;
+    }
+    return null;
+  };
+
+  const untracked = [];
+  for (const f of files) {
+    const rel = relPath(root, f);
+    const entry = index.files[rel];
+    const track = entry?.track || 'untracked';
+    if (track === 'untracked' && !findAcc(rel)) {
+      untracked.push(rel);
+    }
+  }
+
+  if (untracked.length === 0) {
+    console.log(JSON.stringify({ decision: 'approve' }));
+    return;
+  }
+
+  // Build actionable suggestion.
+  const fileList = untracked.join(',');
+  const acceptCmd = `ft accept-drift --reason "<mandatory audit text>" --files ${fileList}`;
+  const authorizeCmd = `ft authorize <program> <node-id> --allowed <path> ...`;
+
+  const reasonLines = [
+    `${untracked.length} file(s) about to be edited are UNTRACKED by any active mainline/backlog/optimize node and have no effective drift acceptance:`,
+    ...untracked.slice(0, 10).map((f) => `  - ${f}`),
+    untracked.length > 10 ? `  - ... and ${untracked.length - 10} more` : '',
+    '',
+    'Options:',
+    `  1. Temporary opt-out (recommended for one-off/exploratory edits): ${acceptCmd}`,
+    `  2. Permanent binding to backlog node: ${authorizeCmd}`,
+    `  3. Skip this check for the session: export FT_HOOKS_MODE=off`,
+  ].filter(Boolean);
+
+  const context = {
+    untracked_files: untracked,
+    active_mainline: mainline ? `${mainline.program}/${mainline.node.id}` : null,
+    drift_check_mode: config.drift_check_mode,
+    suggestion_accept: acceptCmd,
+    suggestion_authorize: authorizeCmd,
+  };
+
+  if (config.drift_check_mode === 'hard') {
+    console.log(JSON.stringify({
+      decision: 'block',
+      reason: reasonLines.join('\n'),
+      context,
+    }));
+    process.exit(1);
+  } else if (config.drift_check_mode === 'soft') {
+    console.log(JSON.stringify({
+      decision: 'approve',
+      reason: 'soft mode — edit allowed with drift warning',
+      context: { ...context, warning: reasonLines.join('\n') },
+    }));
+  } else {
+    // off (shouldn't reach here due to earlier check, but be defensive)
+    console.log(JSON.stringify({ decision: 'approve', reason: 'drift_check_mode=off' }));
+  }
+}
+
 // Phase 2 mainline validators — run only under `validate full`.
 function validateMainlineUnique(resolved, errors) {
   const activeRoots = resolved.filter((e) => e.track === 'mainline' && e.depth === 0 && isActiveStatus(e.node.status));
@@ -3374,6 +3928,33 @@ function listStagedFiles(root) {
   try {
     const out = run('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMRTUXB'], root);
     return out.split('\n').map((s) => s.trim()).filter(Boolean);
+  } catch (_) {
+    return [];
+  }
+}
+
+// Phase 4: scan `git status --porcelain` for all changed/untracked files in the worktree.
+// Used by session-start and pre-edit to surface UNTRACKED files before they drift further.
+// Format: each line "<XY> <path>" where XY is 2-char status; we keep the path only.
+// Untracked entries appear as "?? path"; renames as "R  old -> new" (we keep new).
+function listWorktreeFiles(root) {
+  try {
+    const out = run('git', ['status', '--porcelain', '--untracked-files=all'], root);
+    const files = [];
+    for (const line of out.split('\n')) {
+      if (!line) continue;
+      // Status format: first 2 chars are XY status, 3rd char is space, rest is path.
+      // Rename/copy entries have " -> " separating old and new paths.
+      const trimmed = line.slice(3);
+      if (!trimmed) continue;
+      let p = trimmed;
+      const arrowIdx = p.indexOf(' -> ');
+      if (arrowIdx >= 0) p = p.slice(arrowIdx + 4);
+      // Strip surrounding quotes that git uses for paths with special chars.
+      if (p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
+      if (p) files.push(p);
+    }
+    return Array.from(new Set(files));
   } catch (_) {
     return [];
   }
@@ -3866,6 +4447,15 @@ function loadNodes(nodesPath) {
 
 function saveNodes(nodesPath, nodes) {
   writeJson(nodesPath, nodes);
+}
+
+// Minimal glob matcher supporting `*` (any chars except '/') and literal text.
+// Sufficient for new-node-batch --pattern filtering where full minimatch is
+// overkill. Returns true if <name> matches <pattern>.
+function minimatchSimple(name, pattern) {
+  if (!pattern || pattern === '*' || pattern === '') return true;
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp(`^${escaped}$`).test(name);
 }
 
 function upsertActiveGate(root, program, node) {

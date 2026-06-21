@@ -37,7 +37,7 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 | `/ft:gate [--verbose]` | `gate [--verbose]` | Show active blockers and next allowed action |
 | `/ft:status` | `status` | Summarize governance programs and active gates |
 | `/ft:steward-sync` | `steward-sync` | Derive `.governance/steward/` relationship index, current next gates, evidence index, and track files from program nodes |
-| `/ft:install-guard` | `install-guard [--force]` | Install `.governance/guards/ft-scope-check.sh` and print hook snippet |
+| `/ft:install-guard` | `install-guard [--force]` | Install `.governance/guards/ft-scope-check.sh` (PostToolUse: scope-check) + `.governance/guards/pre-commit` (drift-check --staged); print hook integration snippets for git core.hooksPath / husky / lefthook / Claude Code settings.json |
 | `/ft:repair` | `repair` | Rebuild active gates from program nodes and drop closed/archived gates |
 | `/ft:mainline` | `mainline` | Print the active mainline tree (depth=0 root + depth=1/2 children + backlog + switch-lock state). Use to verify work stays on the唯一 active mainline |
 | `/ft:locate <file>` | `locate <file>` | Resolve which track (mainline/backlog/optimize/untracked) a file belongs to via `.governance/file-to-track.json`. Use before edits to catch drift |
@@ -45,6 +45,9 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 | `/ft:drift-check` | `drift-check --files <a,b,c> \| --staged` | Strict drift detector. Exit 0 = all files on mainline (or backlog/optimize with warning); exit 1 = any UNTRACKED file; exit 2 = bad args. Outputs JSON lines per file + summary |
 | `/ft:accept-drift` | `accept-drift --reason <text> --files <a,b,c> [--expires <spec>] [--mainline <id\|none>] [--by <name>]` | Phase 3. Write a temporary drift-acceptance record binding files to the current active mainline. `--expires` default `30d`; `0` for permanent; format `<N><s\|m\|h\|d\|w>`. Files must exist on disk. See Phase 3 section for binding semantics |
 | `/ft:revoke-drift` | `revoke-drift --id <acceptance-id>` | Phase 3. Mark an acceptance `revoked` (record kept for audit). Exit 1 if id not found or already revoked |
+| `/ft:config` | `config [list\|get\|set] [--key <name>] [--value <text>]` | Phase 4. Read/write `.governance/config.json`. Keys: `drift_check_mode` (hard/soft/off), `hooks_mode` (on/off), `mainline_warning` (bool), `auto_accept_suggest` (bool). Env vars `FT_DRIFT_CHECK_MODE` / `FT_HOOKS_MODE` / `FT_MAINLINE_WARNING` / `FT_AUTO_ACCEPT_SUGGEST` override file values |
+| `/ft:session-start` | `session-start` | Phase 4. Print compact session context: active mainline + descendants, worktree drift counts via `git status --porcelain`, active acceptances + nearest expiry, next-gate suggestion. Designed for Claude Code SessionStart hook `additionalContext` |
+| `/ft:pre-edit` | `pre-edit --files <a,b,c>` | Phase 4. PreToolUse hook for Edit/Write/MultiEdit. Emits Claude Code hook JSON: `{decision:"approve"}` or `{decision:"block", reason, context}`. Honors `drift_check_mode` (hard=block, soft=approve+warning, off=skip) and `hooks_mode`. Suggests `accept-drift` or `authorize` cmd templates |
 
 ## Mainline Layering (Phase 1)
 
@@ -135,6 +138,70 @@ UNTRACKED files with an effective acceptance are reported as `track: "accepted-d
 
 **Lifecycle**: accept → drift-check passes → (periodically review; convert to backlog node when stabilized via `ft authorize`) → revoke or let expire when the work is integrated or abandoned.
 
+## Hook Integration (Phase 4)
+
+Phase 4 wires drift-check into three intervention points so UNTRACKED drift is surfaced *before* a commit lands or an edit is applied — not after. All three honor `.governance/config.json` and the matching env vars.
+
+**Configuration** (`ft config list` shows resolved values, env vars override file):
+
+| Key | Values | Env override | Default |
+|---|---|---|---|
+| `drift_check_mode` | `hard` / `soft` / `off` | `FT_DRIFT_CHECK_MODE` | `hard` |
+| `hooks_mode` | `on` / `off` | `FT_HOOKS_MODE` | `on` |
+| `mainline_warning` | bool | `FT_MAINLINE_WARNING=1\|0` | `true` |
+| `auto_accept_suggest` | bool | `FT_AUTO_ACCEPT_SUGGEST=1\|0` | `true` |
+
+- `hard` = block commit / block edit (exit 1)
+- `soft` = warn but allow (exit 0, message to stderr)
+- `off` = skip entirely
+
+**1. Pre-commit (git)** — runs `ft drift-check --staged`, blocks UNTRACKED in hard mode. Install:
+
+```bash
+ft install-guard            # writes .governance/guards/{ft-scope-check.sh, pre-commit}
+# option A: git core.hooksPath (simplest)
+git config core.hooksPath .governance/guards
+# option B: symlink only pre-commit
+ln -sf ../../.governance/guards/pre-commit .git/hooks/pre-commit
+# option C: husky — add to .husky/pre-commit: bash .governance/guards/pre-commit
+```
+
+**2. Claude Code SessionStart** — injects session context (active mainline, drift counts, acceptances, next-gate suggestion). Add to `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "command": "node $FT_GOVERNANCE_SCRIPT session-start --root $(git rev-parse --show-toplevel)",
+      "description": "function-tree session context"
+    }]
+  }
+}
+```
+
+**3. Claude Code PreToolUse (Edit/Write/MultiEdit)** — emits Claude Code hook JSON `{decision:"approve"|"block", reason, context}`. Suggests the exact `accept-drift` / `authorize` command for the file being edited. Add to `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Edit|MultiEdit|Write",
+      "command": "node $FT_GOVERNANCE_SCRIPT pre-edit --files {file}",
+      "description": "function-tree drift-check + accept-drift suggestion"
+    }],
+    "PostToolUse": [{
+      "matcher": "Edit|MultiEdit|Write",
+      "command": "bash .governance/guards/ft-scope-check.sh",
+      "description": "scope-check after edit"
+    }]
+  }
+}
+```
+
+**Escape hatch**: `FT_DRIFT_CHECK_MODE=off git commit ...` or `FT_HOOKS_MODE=off` in the session skips all enforcement. Use sparingly; prefer `ft accept-drift` to keep the audit trail honest.
+
+**Output contract for non-Claude integrations**: `ft pre-edit` exit codes align with drift-check (0=approve, 1=block, 2=bad args) so the same command works in editor plugins (VS Code, Neovim) that consume exit codes rather than JSON.
+
 ## Hard Rules
 
 - Do not edit source code from `evidence-prepared`, `decision-prepared`, or `authorization-prepared`.
@@ -163,6 +230,8 @@ The helper creates and validates:
 - `.governance/backups/FUNCTION_TREE.*.md`
 - `.governance/file-to-track.json` (reverse file→track index, incrementally rebuilt by `ft map` / `ft locate`)
 - `.governance/drift-acceptances.json` (Phase 3 audit log of accepted drift records, written by `ft accept-drift` / `ft revoke-drift`)
+- `.governance/config.json` (Phase 4 governance config: drift_check_mode, hooks_mode, mainline_warning, auto_accept_suggest; written by `ft config set`)
+- `.governance/guards/pre-commit` (Phase 4 git pre-commit hook calling `ft drift-check --staged`, generated by `ft install-guard`)
 - `FUNCTION_TREE.md`
 
 ## References
