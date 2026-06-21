@@ -43,7 +43,8 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 | `/ft:locate <file>` | `locate <file>` | Resolve which track (mainline/backlog/optimize/untracked) a file belongs to via `.governance/file-to-track.json`. Use before edits to catch drift |
 | `/ft:map` | `map` | Rebuild the file-to-track reverse index and print coverage stats (files per track). Idempotent; safe to run anytime |
 | `/ft:drift-check` | `drift-check --files <a,b,c> \| --staged` | Strict drift detector. Exit 0 = all files on mainline (or backlog/optimize with warning); exit 1 = any UNTRACKED file; exit 2 = bad args. Outputs JSON lines per file + summary |
-| `/ft:accept-drift` | `accept-drift --reason <text> --files <a,b,c>` | Phase 3 placeholder. Currently refuses with exit 2 and documents the future API. Phase 3 will write `.governance/drift-acceptances.json` |
+| `/ft:accept-drift` | `accept-drift --reason <text> --files <a,b,c> [--expires <spec>] [--mainline <id\|none>] [--by <name>]` | Phase 3. Write a temporary drift-acceptance record binding files to the current active mainline. `--expires` default `30d`; `0` for permanent; format `<N><s\|m\|h\|d\|w>`. Files must exist on disk. See Phase 3 section for binding semantics |
+| `/ft:revoke-drift` | `revoke-drift --id <acceptance-id>` | Phase 3. Mark an acceptance `revoked` (record kept for audit). Exit 1 if id not found or already revoked |
 
 ## Mainline Layering (Phase 1)
 
@@ -76,7 +77,63 @@ Phase 2 hardens the read-only visibility into write-time checks:
 
 Output format per file: `{"file": "<rel>", "track": "<mainline|backlog|optimize|untracked>", "drift": <bool>, "active_mainline": "<prog/id|null>", "node_id": "...", "program": "...", "mainline_id": "...", "depth": <n>}`.
 
-Use `ft drift-check --staged` in pre-commit hooks (Phase 4 target). `ft accept-drift --reason --files` is reserved as the Phase 3 escape hatch; for now it just prints guidance and exits 2.
+Use `ft drift-check --staged` in pre-commit hooks (Phase 4 target). `ft accept-drift` provides the opt-out escape hatch (see Phase 3); without an effective acceptance, UNTRACKED files still hard-fail drift-check.
+
+## Drift Acceptance (Phase 3)
+
+Phase 3 makes drift-check enforceable in practice by giving developers an explicit, audited opt-out. Without it, Phase 2's HARD FAIL on UNTRACKED files would block every commit that touches a non-mainline file.
+
+**`ft accept-drift --reason <text> --files <a,b,c> [--expires <spec>] [--mainline <id|none>] [--by <name>]`**
+
+Writes one record to `.governance/drift-acceptances.json`:
+
+```json
+{
+  "id": "drift-2026-06-19-001",
+  "files": ["scripts/cleanup_legacy.py"],
+  "reason": "<mandatory audit text>",
+  "accepted_at": "2026-06-19T14:30:00Z",
+  "accepted_by": "<$LOGNAME or --by>",
+  "mainline_at_accept": "B1.000",
+  "expires_at": "2026-07-19T14:30:00Z",
+  "status": "active"
+}
+```
+
+Acceptance is **effective** for a given file iff all hold:
+
+- `status === 'active'`
+- `mainline_at_accept === <current active mainline id>` (null matches "no active mainline"; mainline switch auto-invalidates prior acceptances — re-accept in the new cycle)
+- `expires_at` is `null` (permanent) OR in the future
+
+**`--expires` semantics** (matches the mainline methodology's "temporary override, time-bounded closure" rule):
+
+| Input | Meaning |
+|---|---|
+| (omitted) | default 30 days from now |
+| `0` or `permanent` | never expires (`expires_at = null`) |
+| `<N><s\|m\|h\|d\|w>` | e.g. `7d`, `12h`, `2w`; parsed to seconds and added to now |
+
+**`ft drift-check` upgrade** — exit code table extended:
+
+| Situation | Exit |
+|---|---|
+| All files mainline OR accepted-drift | 0 |
+| Any file UNTRACKED with no effective acceptance | 1 |
+| Bad arguments | 2 |
+
+UNTRACKED files with an effective acceptance are reported as `track: "accepted-drift"`, `drift: false`, `accepted: true`, `acceptance_id: "..."`, `expires_at: "permanent" | "<iso>"`. They no longer trigger HARD FAIL.
+
+**`ft revoke-drift --id <acceptance-id>`** — sets `status: 'revoked'`, stamps `revoked_at`/`revoked_by`. Record is retained for audit (not deleted). Revoking a non-existent or already-revoked id exits 1.
+
+**`validate full` rule**:
+
+- **V-ACCEPTANCE-EXPIRED**: warning when an active acceptance's `expires_at` is in the past. Expired records are already ineffective in drift-check (no enforcement effect); the warning nudges the developer to revoke or re-accept so the audit file stays honest. Not an error — expiry is expected.
+- **V-ACCEPTANCE-MALFORMED**: warning when `expires_at` is non-null but unparseable; drift-check treats such records as ineffective.
+
+**Backlog binding is separate** (per mainline methodology): `accept-drift` is a *submission-level* audit opt-out, not a backlog promotion. Accepted-drift files do NOT get added to any backlog node's `allowed_paths`. Promoting a drifted file into a real backlog node requires manual `ft authorize` — keeping human-in-the-loop on every node-path change.
+
+**Lifecycle**: accept → drift-check passes → (periodically review; convert to backlog node when stabilized via `ft authorize`) → revoke or let expire when the work is integrated or abandoned.
 
 ## Hard Rules
 
@@ -105,6 +162,7 @@ The helper creates and validates:
 - `.governance/steward/tracks/*.md`
 - `.governance/backups/FUNCTION_TREE.*.md`
 - `.governance/file-to-track.json` (reverse file→track index, incrementally rebuilt by `ft map` / `ft locate`)
+- `.governance/drift-acceptances.json` (Phase 3 audit log of accepted drift records, written by `ft accept-drift` / `ft revoke-drift`)
 - `FUNCTION_TREE.md`
 
 ## References

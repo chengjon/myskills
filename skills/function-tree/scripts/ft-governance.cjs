@@ -141,6 +141,9 @@ function main() {
       case 'accept-drift':
         cmdAcceptDrift(root, parsed.flags, parsed.args);
         break;
+      case 'revoke-drift':
+        cmdRevokeDrift(root, parsed.flags, parsed.args);
+        break;
       default:
         fail(`unknown command: ${parsed.command}`, 2);
     }
@@ -210,7 +213,9 @@ function usage(code) {
     '  ft-governance.cjs locate <file-path> [--root <repo>]',
     '  ft-governance.cjs map [--root <repo>]',
     '  ft-governance.cjs drift-check --files <a,b,c> | --staged [--root <repo>]',
-    '  ft-governance.cjs accept-drift --reason <text> --files <a,b,c> [--root <repo>]   (Phase 3 placeholder)',
+    '  ft-governance.cjs accept-drift --reason <text> --files <a,b,c> [--expires <spec>] [--mainline <id|none>] [--by <name>] [--root <repo>]',
+    '       --expires default 30d; pass "0" for permanent; format: <N><s|m|h|d|w>',
+    '  ft-governance.cjs revoke-drift --id <acceptance-id> [--root <repo>]',
   ].join('\n');
   console.log(text);
   process.exit(code);
@@ -3110,6 +3115,66 @@ function readJsonSafe(p) {
   try { return readJson(p); } catch (_) { return null; }
 }
 
+// Phase 3 drift acceptances — file-level opt-out from drift-check enforcement.
+// Path: <root>/.governance/drift-acceptances.json
+// Schema v1: { version, acceptances: [{ id, files[], reason, accepted_at, accepted_by,
+//   mainline_at_accept, expires_at|null, status: 'active'|'revoked' }] }
+// Acceptance matches a file iff:
+//   - file listed in .files (relpath, forward-slash)
+//   - .status === 'active'
+//   - .mainline_at_accept === currentActiveMainlineId (null matches null — both "no active mainline")
+//   - .expires_at is null (permanent) OR .expires_at > now
+function driftAcceptancesPath(root) {
+  return path.join(root, '.governance', 'drift-acceptances.json');
+}
+
+function loadDriftAcceptances(root) {
+  const data = readJsonSafe(driftAcceptancesPath(root));
+  if (!data || !Array.isArray(data.acceptances)) {
+    return { version: 1, acceptances: [] };
+  }
+  return { version: 1, acceptances: data.acceptances.slice() };
+}
+
+function saveDriftAcceptances(root, data) {
+  const payload = {
+    version: 1,
+    generated_at: new Date().toISOString(),
+    acceptances: data.acceptances,
+  };
+  writeJson(driftAcceptancesPath(root), payload);
+}
+
+// Returns the active mainline root id (e.g. "B1.000") or null when none active.
+// Used to bind acceptances to a specific mainline cycle.
+function currentActiveMainlineId(resolved) {
+  const r = resolved.find((e) => e.track === 'mainline' && e.depth === 0 && isActiveStatus(e.node.status));
+  return r ? String(r.node.id) : null;
+}
+
+function isAcceptanceEffective(acc, mainlineId, nowMs) {
+  if (!acc || acc.status !== 'active') return false;
+  if (String(acc.mainline_at_accept || null) !== String(mainlineId || null)) return false;
+  if (acc.expires_at == null || acc.expires_at === '') return true; // permanent
+  const exp = Date.parse(acc.expires_at);
+  if (Number.isNaN(exp)) return false; // malformed expiry = not effective (safer)
+  return exp > nowMs;
+}
+
+function newAcceptanceId(existing) {
+  const now = new Date();
+  const ymd = now.toISOString().slice(0, 10); // YYYY-MM-DD
+  const prefix = `drift-${ymd}-`;
+  let max = 0;
+  for (const a of existing) {
+    if (a && typeof a.id === 'string' && a.id.startsWith(prefix)) {
+      const tail = Number(a.id.slice(prefix.length));
+      if (!Number.isNaN(tail) && tail > max) max = tail;
+    }
+  }
+  return `${prefix}${String(max + 1).padStart(3, '0')}`;
+}
+
 // Phase 2 mainline validators — run only under `validate full`.
 function validateMainlineUnique(resolved, errors) {
   const activeRoots = resolved.filter((e) => e.track === 'mainline' && e.depth === 0 && isActiveStatus(e.node.status));
@@ -3173,6 +3238,29 @@ function validateDepthConsistency(resolved, errors) {
       }
     }
   }
+}
+
+// Phase 3: warns on expired acceptances still marked 'active' in drift-acceptances.json.
+// Expired records are auto-ignored by drift-check (no enforcement effect), but leaving
+// them 'active' in the file is stale state. Recommend revoke or re-accept.
+function validateAcceptanceExpired(root, warnings) {
+  const data = loadDriftAcceptances(root);
+  const nowMs = Date.now();
+  let expiredCount = 0;
+  for (const acc of data.acceptances) {
+    if (!acc || acc.status !== 'active') continue;
+    if (acc.expires_at == null || acc.expires_at === '') continue; // permanent
+    const exp = Date.parse(acc.expires_at);
+    if (Number.isNaN(exp)) {
+      warnings.push(`V-ACCEPTANCE-MALFORMED: ${acc.id} has unparsable expires_at="${acc.expires_at}"; drift-check will treat as ineffective — revoke or fix`);
+      continue;
+    }
+    if (exp <= nowMs) {
+      expiredCount += 1;
+      warnings.push(`V-ACCEPTANCE-EXPIRED: ${acc.id} (mainline=${acc.mainline_at_accept == null ? '(none)' : acc.mainline_at_accept}, files=${(acc.files || []).length}) expired at ${acc.expires_at}; drift-check treats it as ineffective — revoke (ft revoke-drift --id ${acc.id}) or re-accept with new expiry`);
+    }
+  }
+  return expiredCount;
 }
 
 function cmdMainline(root) {
@@ -3295,8 +3383,8 @@ function cmdDriftCheck(root, flags) {
   // Source files: explicit --files a,b,c, or --staged (git diff --cached), or both.
   // Output: JSON lines per file + human-readable summary at end.
   // Exit codes (strict mode):
-  //   0  all files tracked (mainline OR backlog OR optimize)
-  //   1  any file UNTRACKED
+  //   0  all files tracked OR accepted-drift (Phase 3: file is UNTRACKED but covered by an effective acceptance)
+  //   1  any file UNTRACKED with no effective acceptance
   //   2  invalid arguments
   const filesFlag = one(flags, 'files');
   const useStaged = flags.staged === true || flags['--staged'] === true;
@@ -3319,13 +3407,30 @@ function cmdDriftCheck(root, flags) {
   const index = readJsonSafe(path.join(root, '.governance', 'file-to-track.json')) || { files: {} };
   const { resolved } = loadAllNodesResolved(root);
   const activeMainline = resolved.find((e) => e.track === 'mainline' && e.depth === 0 && isActiveStatus(e.node.status));
+  const activeMainlineId = activeMainline ? String(activeMainline.node.id) : null;
 
-  let mainlineCount = 0, backlogCount = 0, optimizeCount = 0, untrackedCount = 0;
+  // Phase 3: load drift acceptances once, scoped to the current active mainline.
+  // isAcceptanceEffective already enforces status=active + mainline match + not-expired.
+  const acceptancesData = loadDriftAcceptances(root);
+  const nowMs = Date.now();
+  const findEffectiveAcceptance = (rel) => {
+    for (const acc of acceptancesData.acceptances) {
+      if (!isAcceptanceEffective(acc, activeMainlineId, nowMs)) continue;
+      const accFiles = Array.isArray(acc.files) ? acc.files : [];
+      if (accFiles.includes(rel)) return acc;
+    }
+    return null;
+  };
+
+  let mainlineCount = 0, backlogCount = 0, optimizeCount = 0, untrackedCount = 0, acceptedCount = 0;
   for (const file of files) {
     const rel = relPath(root, file);
     const entry = index.files[rel];
     let track = 'untracked';
     let nodeInfo = null;
+    let accepted = false;
+    let acceptanceId = null;
+    let acceptanceExpires = null;
     if (entry) {
       track = entry.track || 'untracked';
       nodeInfo = {
@@ -3335,23 +3440,45 @@ function cmdDriftCheck(root, flags) {
         depth: entry.depth,
       };
     }
+    // Phase 3: even if indexed, files that fall under backlog/optimize/mainline are governed by their node;
+    // acceptance lookup applies only to UNTRACKED files (those outside any active node's allowed_paths).
+    if (track === 'untracked') {
+      const acc = findEffectiveAcceptance(rel);
+      if (acc) {
+        track = 'accepted-drift';
+        accepted = true;
+        acceptanceId = acc.id;
+        acceptanceExpires = acc.expires_at == null ? 'permanent' : acc.expires_at;
+      }
+    }
     const drift = track === 'untracked';
-    const record = { file: rel, track, drift, active_mainline: activeMainline ? `${activeMainline.program}/${activeMainline.node.id}` : null, ...nodeInfo };
+    const record = {
+      file: rel,
+      track,
+      drift,
+      active_mainline: activeMainline ? `${activeMainline.program}/${activeMainline.node.id}` : null,
+      ...(accepted ? { accepted: true, acceptance_id: acceptanceId, expires_at: acceptanceExpires } : {}),
+      ...nodeInfo,
+    };
     console.log(JSON.stringify(record));
     if (track === 'mainline') mainlineCount++;
     else if (track === 'backlog') backlogCount++;
     else if (track === 'optimize') optimizeCount++;
+    else if (track === 'accepted-drift') acceptedCount++;
     else untrackedCount++;
   }
   console.error('---');
-  console.error(`drift-check: mainline=${mainlineCount} backlog=${backlogCount} optimize=${optimizeCount} untracked=${untrackedCount}`);
+  console.error(`drift-check: mainline=${mainlineCount} backlog=${backlogCount} optimize=${optimizeCount} accepted-drift=${acceptedCount} untracked=${untrackedCount}`);
   if (activeMainline) {
     console.error(`active mainline: ${activeMainline.program}/${activeMainline.node.id} (${activeMainline.node.title || ''})`);
   } else {
     console.error('no active mainline; switch lock inactive');
   }
+  if (acceptedCount > 0) {
+    console.error(`NOTE: ${acceptedCount} file(s) are accepted-drift (explicitly opted out of mainline); review periodically and convert to backlog node when stabilized`);
+  }
   if (untrackedCount > 0) {
-    console.error(`HARD FAIL: ${untrackedCount} file(s) are UNTRACKED — accept drift via 'ft accept-drift --reason ...' (Phase 3) or update node allowed_paths`);
+    console.error(`HARD FAIL: ${untrackedCount} file(s) are UNTRACKED — accept drift via 'ft accept-drift --reason ... --files ...' or update node allowed_paths`);
     process.exit(1);
   }
   if (backlogCount > 0) {
@@ -3364,20 +3491,136 @@ function cmdDriftCheck(root, flags) {
 }
 
 function cmdAcceptDrift(root, flags) {
-  // Phase 3 placeholder. Refuses to write anything yet, but documents the future API.
-  // `root` is intentionally accepted for API symmetry with other commands and will be used in Phase 3.
-  void root;
+  // Phase 3 implementation. Writes one acceptance record binding {file, mainline} tuple.
+  // Flags:
+  //   --reason <text>     required; audit-trail justification (non-empty)
+  //   --files <a,b,c>     required; relpaths or abspaths; must exist on disk
+  //   --expires <spec>    optional; default '30d'. '0' = permanent. Format: '<N><unit>' (s|m|h|d|w)
+  //   --mainline <id>     optional; override current active mainline id. Use 'none' for no-active-mainline.
+  //   --by <name>         optional; override accepted_by (default: $LOGNAME / 'unknown')
   const reason = one(flags, 'reason');
   const filesFlag = one(flags, 'files');
-  if (!reason || !filesFlag) {
-    console.error('accept-drift requires --reason <text> --files <a,b,c>');
-    console.error('Phase 3 will write a drift-acceptance record to .governance/drift-acceptances.json');
-    console.error('Once accepted, ft drift-check treats the file as opt-in rather than UNTRACKED.');
+  const expiresFlag = one(flags, 'expires');
+  const mainlineFlag = one(flags, 'mainline');
+  const byFlag = one(flags, 'by');
+
+  if (!reason || !reason.trim()) {
+    console.error('accept-drift requires --reason <text>');
+    console.error('reason is mandatory for audit trail; documents why this drift is allowed (per mainline methodology)');
     process.exit(2);
   }
-  console.error('accept-drift is not implemented yet (Phase 3 target).');
-  console.error('For now: either add the file to a node\'s allowed_paths via authorize, or proceed without drift-check enforcement.');
-  process.exit(2);
+  if (!filesFlag) {
+    console.error('accept-drift requires --files <a,b,c>');
+    process.exit(2);
+  }
+  const files = filesFlag.split(',').map((s) => s.trim()).filter(Boolean);
+  if (!files.length) {
+    console.error('accept-drift --files must list at least one path');
+    process.exit(2);
+  }
+  for (const f of files) {
+    const abs = path.isAbsolute(f) ? f : path.resolve(process.cwd(), f);
+    if (!fs.existsSync(abs)) {
+      console.error(`accept-drift: file not found: ${f} (resolved ${abs})`);
+      console.error('cannot accept drift on a nonexistent file; create it first or fix the path');
+      process.exit(2);
+    }
+  }
+
+  const { resolved } = loadAllNodesResolved(root);
+  let mainlineId;
+  if (mainlineFlag) {
+    mainlineId = mainlineFlag === 'none' ? null : mainlineFlag;
+  } else {
+    mainlineId = currentActiveMainlineId(resolved);
+  }
+
+  let expiresAt = null; // default permanent handled below
+  if (!expiresFlag) {
+    expiresAt = expiryFromNow(30 * 24 * 60 * 60); // 30 days, seconds
+  } else if (expiresFlag === '0' || expiresFlag.toLowerCase() === 'permanent') {
+    expiresAt = null; // explicit permanent
+  } else {
+    const secs = parseDuration(expiresFlag);
+    if (secs == null) {
+      console.error(`accept-drift: invalid --expires ${expiresFlag}; format: <N><s|m|h|d|w> or 0 for permanent`);
+      process.exit(2);
+    }
+    expiresAt = expiryFromNow(secs);
+  }
+
+  const data = loadDriftAcceptances(root);
+  const id = newAcceptanceId(data.acceptances);
+  const acceptedBy = (byFlag && byFlag.trim()) || (process.env.LOGNAME && process.env.LOGNAME.trim()) || 'unknown';
+  const relFiles = files.map((f) => relPath(root, f));
+
+  const record = {
+    id,
+    files: relFiles,
+    reason: reason.trim(),
+    accepted_at: new Date().toISOString(),
+    accepted_by: acceptedBy,
+    mainline_at_accept: mainlineId,
+    expires_at: expiresAt,
+    status: 'active',
+  };
+  data.acceptances.push(record);
+  saveDriftAcceptances(root, data);
+
+  console.log(`accepted drift ${id}`);
+  console.log(`  files:   ${relFiles.join(', ')}`);
+  console.log(`  mainline: ${mainlineId == null ? '(no active mainline)' : mainlineId}`);
+  console.log(`  expires: ${expiresAt == null ? 'permanent' : expiresAt}`);
+  console.log(`  reason:  ${record.reason}`);
+  console.log(`  by:      ${acceptedBy}`);
+  console.log(`path: ${driftAcceptancesPath(root)}`);
+}
+
+function cmdRevokeDrift(root, flags) {
+  // Phase 3: mark an existing acceptance as revoked (record kept for audit). Hard-fail if not found.
+  const id = one(flags, 'id');
+  if (!id) {
+    console.error('revoke-drift requires --id <acceptance-id>');
+    console.error('find ids via: cat .governance/drift-acceptances.json');
+    process.exit(2);
+  }
+  const data = loadDriftAcceptances(root);
+  const acc = data.acceptances.find((a) => a && a.id === id);
+  if (!acc) {
+    console.error(`revoke-drift: acceptance not found: ${id}`);
+    console.error(`path: ${driftAcceptancesPath(root)}`);
+    process.exit(1);
+  }
+  if (acc.status === 'revoked') {
+    console.error(`revoke-drift: ${id} is already revoked (no change)`);
+    process.exit(1);
+  }
+  acc.revoked_at = new Date().toISOString();
+  acc.revoked_by = (process.env.LOGNAME && process.env.LOGNAME.trim()) || 'unknown';
+  acc.status = 'revoked';
+  saveDriftAcceptances(root, data);
+  console.log(`revoked ${id}`);
+  console.log(`  files:   ${(acc.files || []).join(', ')}`);
+  console.log(`  mainline: ${acc.mainline_at_accept == null ? '(no active mainline at accept)' : acc.mainline_at_accept}`);
+  console.log(`  reason (original): ${acc.reason}`);
+  console.log(`path: ${driftAcceptancesPath(root)}`);
+}
+
+// Parse "<N><unit>" where unit ∈ s|m|h|d|w. Returns seconds (integer) or null on invalid.
+function parseDuration(spec) {
+  const m = /^(\d+)\s*([smhdw])$/i.exec(String(spec || '').trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n < 0) return null;
+  const unit = m[2].toLowerCase();
+  const mult = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 }[unit];
+  return Math.floor(n * mult);
+}
+
+// Returns ISO string `now + secs` or null for permanent (secs<=0).
+function expiryFromNow(secs) {
+  if (secs == null || secs <= 0) return null;
+  return new Date(Date.now() + secs * 1000).toISOString();
 }
 
 function relPath(root, file) {
@@ -3454,6 +3697,8 @@ function validateGovernance(root, flags = {}, args = []) {
       validateBacklogSwitchLock(resolved, errors, warnings);
       validateDepthConsistency(resolved, errors);
     }
+    // Phase 3: drift-acceptance hygiene runs regardless of programs/ existence
+    validateAcceptanceExpired(root, warnings);
   }
 
   if (errors.length) {
