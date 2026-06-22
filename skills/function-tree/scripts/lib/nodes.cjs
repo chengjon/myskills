@@ -69,12 +69,65 @@ function requireProgramDir(root, program) {
 }
 
 function appendTreeNode(programDir, node) {
+  syncTreeMd(programDir);
+}
+
+function syncTreeMd(programDir) {
   const treePath = path.join(programDir, 'tree.md');
   if (!fs.existsSync(treePath)) return;
-  const line = `- [ ] ${node.id}: ${node.title || node.id} (${node.status}, FT: ${node.function_tree_ref || '-'})`;
+  const nodesPath = path.join(programDir, 'nodes.json');
+  const nodes = loadNodes(nodesPath);
   const content = readFile(treePath);
-  if (content.includes(`${node.id}:`)) return;
-  writeFile(treePath, `${content.trimEnd()}\n${line}\n`);
+
+  const treeSection = renderTreeSection(nodes);
+  const evidenceSection = renderEvidenceLedgerSection(nodes);
+
+  let out = content;
+  out = replaceTreeSection(out, '## Tree', treeSection);
+  out = replaceTreeSection(out, '## Evidence Ledger', evidenceSection);
+  writeFile(treePath, out);
+}
+
+function renderTreeSection(nodes) {
+  if (!nodes.length) return '- [ ] (no nodes yet)\n';
+  const lines = nodes.map((n) => {
+    const typeLabel = n.node_type_input && n.node_type_input !== n.node_type
+      ? `${n.node_type_input}/${n.node_type}`
+      : (n.node_type || 'external');
+    const checkbox = (n.status === 'closed' || n.status === 'archived') ? '[x]' : '[ ]';
+    return `- ${checkbox} ${n.id}: ${n.title || n.id} [${typeLabel}] (${n.status || '-'}, FT: ${n.function_tree_ref || '-'})`;
+  });
+  return lines.join('\n') + '\n';
+}
+
+function renderEvidenceLedgerSection(nodes) {
+  const header = '| Node | Evidence | Current HEAD | Notes |\n|------|----------|--------------|-------|';
+  const rows = nodes
+    .filter((n) => Array.isArray(n.evidence) && n.evidence.length)
+    .map((n) => {
+      const latest = n.evidence[n.evidence.length - 1];
+      const evPath = latest.path || latest.note || '-';
+      const head = latest.current_head || '-';
+      const note = (latest.note || '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
+      return `| ${n.id} | ${evPath} | \`${head}\` | ${note} |`;
+    });
+  if (!rows.length) return header + '\n| _no evidence recorded yet_ |  |  |  |';
+  return header + '\n' + rows.join('\n');
+}
+
+function replaceTreeSection(content, header, newBody) {
+  const idx = content.indexOf(header);
+  if (idx < 0) return content;
+  const startIdx = idx + header.length;
+  // skip the trailing newline after the header
+  const afterHeader = content.slice(startIdx);
+  const nlMatch = afterHeader.match(/^\n*/);
+  const bodyStart = startIdx + (nlMatch ? nlMatch[0].length : 0);
+  // find next "## " header starting from after the newline
+  const rest = content.slice(bodyStart);
+  const nextMatch = rest.match(/\n## /);
+  const endIdx = nextMatch ? bodyStart + nextMatch.index : content.length;
+  return content.slice(0, bodyStart) + newBody + '\n' + content.slice(endIdx);
 }
 
 function assertTransitionAllowed(root, node, to, flags) {
@@ -283,4 +336,4 @@ function stewardTypeFor(node) {
   if (Array.isArray(node.evidence) && node.evidence.length) return 'evidence';
   return 'decision';
 }
-module.exports = { TRACK_VALUES, loadNodes, saveNodes, loadAllNodes, loadAllNodesResolved, loadTargetNode, requireProgramDir, appendTreeNode, assertTransitionAllowed, staleEvidenceReason, nextGateFor, renderTaskCard, yamlList, yamlString, latestEvidenceHead, normalizeTrack, normalizeDepth, normalizeStewardNodeType, resolveMainlineFields, resolveMainlineRoot, isActiveStatus, stewardTypeFor };
+module.exports = { TRACK_VALUES, loadNodes, saveNodes, loadAllNodes, loadAllNodesResolved, loadTargetNode, requireProgramDir, appendTreeNode, syncTreeMd, assertTransitionAllowed, staleEvidenceReason, nextGateFor, renderTaskCard, yamlList, yamlString, latestEvidenceHead, normalizeTrack, normalizeDepth, normalizeStewardNodeType, resolveMainlineFields, resolveMainlineRoot, isActiveStatus, stewardTypeFor };

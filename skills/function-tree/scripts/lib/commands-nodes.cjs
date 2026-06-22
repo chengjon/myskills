@@ -8,7 +8,7 @@ const { refreshFunctionTreeDoc, writeFunctionTreeDoc, backupFunctionTreeDoc, ext
 const { activeGateFromNode, upsertActiveGate, syncActiveGates, loadActiveGates, normalizeGates } = require('./gates.cjs');
 const { list, many, one, fail, escapeCell, escapeRegExp, globToRegExp, matches, gateName, firstExistingPath, formatList, existingPaths, parseDuration, expiryFromNow, titleCase, markdownTable, parseTomlSectionNames, parseTomlTableKeys, matchBracedDict, minimatchSimple, isTestSourceFile } = require('./helpers.cjs');
 const { run, readFile, writeFile, readJson, writeJson, readJsonSafe, renderTemplate, ensureDir, skillDir, gitHead, shellQuote, safeFileName, relPath, rel, listStagedFiles, listWorktreeFiles, collectSourceFiles } = require('./io-utils.cjs');
-const { TRACK_VALUES, loadNodes, saveNodes, loadAllNodes, loadAllNodesResolved, loadTargetNode, requireProgramDir, appendTreeNode, assertTransitionAllowed, staleEvidenceReason, nextGateFor, renderTaskCard, yamlList, yamlString, latestEvidenceHead, normalizeTrack, normalizeDepth, normalizeStewardNodeType, resolveMainlineFields, resolveMainlineRoot, isActiveStatus, stewardTypeFor } = require('./nodes.cjs');
+const { TRACK_VALUES, loadNodes, saveNodes, loadAllNodes, loadAllNodesResolved, loadTargetNode, requireProgramDir, appendTreeNode, syncTreeMd, assertTransitionAllowed, staleEvidenceReason, nextGateFor, renderTaskCard, yamlList, yamlString, latestEvidenceHead, normalizeTrack, normalizeDepth, normalizeStewardNodeType, resolveMainlineFields, resolveMainlineRoot, isActiveStatus, stewardTypeFor } = require('./nodes.cjs');
 function initProgram(root, args, flags) {
   // Program defaults to basename(root) so callers can run `ft init` with no args.
   // Validation still applies to the resolved name — if basename(root) contains
@@ -89,10 +89,19 @@ function newNode(root, args, flags) {
   if (nodes.some((node) => node.id === id)) fail(`node already exists: ${program}/${id}`, 2);
 
   const now = new Date().toISOString();
+  const typeInput = one(flags, 'type') || 'decision';
   const node = {
     id,
     title,
-    node_type: normalizeStewardNodeType(one(flags, 'type') || 'decision'),
+    // canonical steward type drives the state machine; aliases like "capability"
+    // normalize to one of the 6 canonical types (evidence/decision/authorization/
+    // implementation/closeout/external) — see NODE_TYPE_ALIASES in constants.cjs.
+    node_type: normalizeStewardNodeType(typeInput),
+    // Preserve the user's original --type input (before alias normalization) so
+    // business-semantic labels (capability, feature, bug, refactor, ...) survive
+    // round-trip through the state machine. This fixes the audit gap where
+    // `--type capability` silently became `external` and lost intent.
+    node_type_input: typeInput,
     owner_lane: one(flags, 'owner-lane') || program,
     parent: one(flags, 'parent') || '',
     status: 'planning',
@@ -175,6 +184,7 @@ function newNodeBatch(root, args, flags) {
       id,
       title: name,
       node_type: normalizeStewardNodeType(typeRaw),
+      node_type_input: typeRaw,
       owner_lane: program,
       parent,
       status: 'planning',
@@ -220,7 +230,7 @@ function newNodeBatch(root, args, flags) {
 }
 
 function reparentNode(root, args, flags) {
-  const { program, id, nodesPath, nodes, node } = loadTargetNode(root, args, 'reparent');
+  const { program, id, nodesPath, nodes, node, programDir } = loadTargetNode(root, args, 'reparent');
   const parent = one(flags, 'parent');
   const mainlineId = one(flags, 'mainline-id');
   const depthRaw = one(flags, 'depth');
@@ -240,13 +250,14 @@ function reparentNode(root, args, flags) {
   node.updated_at = new Date().toISOString();
 
   saveNodes(nodesPath, nodes);
+  syncTreeMd(programDir);
   upsertActiveGate(root, program, node);
   syncActiveGates(root);
   console.log(`reparented: ${program}/${id} (parent=${node.parent || '-'}, track=${node.track || 'untracked'}, depth=${node.depth !== undefined ? node.depth : 'inherit'})`);
 }
 
 function observeNode(root, args, flags) {
-  const { program, id, nodesPath, nodes, node } = loadTargetNode(root, args, 'observe');
+  const { program, id, nodesPath, nodes, node, programDir } = loadTargetNode(root, args, 'observe');
   const evidence = one(flags, 'evidence');
   if (!evidence) fail('observe requires --evidence <path-or-note>', 2);
   const head = gitHead(root);
@@ -265,6 +276,7 @@ function observeNode(root, args, flags) {
   node.next_gate = 'prepare decision or authorization';
   node.updated_at = record.recorded_at;
   saveNodes(nodesPath, nodes);
+  syncTreeMd(programDir);
   upsertActiveGate(root, program, node);
   syncActiveGates(root);
   console.log(`observed evidence for: ${program}/${id}`);
@@ -300,13 +312,14 @@ function authorizeNode(root, args, flags) {
   ensureDir(cardsDir);
   writeFile(path.join(cardsDir, `${safeFileName(id)}.yaml`), renderTaskCard(node));
   saveNodes(nodesPath, nodes);
+  syncTreeMd(programDir);
   upsertActiveGate(root, program, node);
   syncActiveGates(root);
   console.log(`authorized draft: ${program}/${id}`);
 }
 
 function transitionNode(root, args, flags) {
-  const { program, id, nodesPath, nodes, node } = loadTargetNode(root, args, 'transition');
+  const { program, id, nodesPath, nodes, node, programDir } = loadTargetNode(root, args, 'transition');
   const to = one(flags, 'to');
   if (!to || !STATUSES.has(to)) fail('transition requires --to <valid-status>', 2);
   assertTransitionAllowed(root, node, to, flags);
@@ -333,13 +346,14 @@ function transitionNode(root, args, flags) {
   });
   node.updated_at = new Date().toISOString();
   saveNodes(nodesPath, nodes);
+  syncTreeMd(programDir);
   upsertActiveGate(root, program, node);
   syncActiveGates(root);
   console.log(`transitioned ${program}/${id}: ${from} -> ${to}`);
 }
 
 function closeoutNode(root, args, flags) {
-  const { program, id, nodesPath, nodes, node } = loadTargetNode(root, args, 'closeout');
+  const { program, id, nodesPath, nodes, node, programDir } = loadTargetNode(root, args, 'closeout');
   if (node.status !== 'implementation-landed') {
     fail(`closeout requires implementation-landed status, got ${node.status}`, 2);
   }
@@ -357,6 +371,7 @@ function closeoutNode(root, args, flags) {
   node.next_gate = 'review closeout and close node';
   node.updated_at = node.closeout.prepared_at;
   saveNodes(nodesPath, nodes);
+  syncTreeMd(programDir);
   upsertActiveGate(root, program, node);
   syncActiveGates(root);
   console.log(`prepared closeout: ${program}/${id}`);
