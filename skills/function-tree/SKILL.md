@@ -22,11 +22,43 @@ node "$SKILL_DIR/scripts/ft-governance.cjs" <command> [args]
 4. Read `references/STEWARD_PROFILE.md` when the work needs cross-tool responsibility boundaries or derived steward indexes.
 5. If the repository defines project-local governance instructions, such as `.governance/profile.md` or agent rules, load them before authorization or implementation gates.
 
+## Default Behavior (when to ask, when to proceed)
+
+To reduce friction, the skill applies these defaults instead of stopping to ask:
+
+**First-time use (no `.governance/` directory exists)**:
+
+- Run `ft init` with `<program>` inferred from `path.basename(root)` and `--ref` defaulting to `<program>`. The user does not need to supply either value.
+- Stop and ask the user only when `basename(root)` contains characters invalid in a program id (spaces, punctuation other than `.-_`). In that case the user must pass an explicit `<program>`.
+- After `init` completes, print the discovered-feature summary and the path to `FUNCTION_TREE.md`. Do not stop to ask "what next" — proceed to the re-entry flow below on the next invocation.
+
+**Re-entry (`.governance/` already exists)**:
+
+- Do not re-run `init`. Detecting an existing `.governance/programs/<program>/` is the signal that the project is already seeded.
+- Run `ft doc` (idempotent refresh of `FUNCTION_TREE.md`) and `ft status` automatically. Both are safe, read-only-ish operations; they update generated sections and report current state.
+- If `nodes.json` is empty (`[]`), report "seed exists, no nodes yet" and **suggest** the next action (e.g., `/ft:new-node` to create a mainline root) instead of blocking.
+- If at least one node exists, report the active mainline (if any), any drift, and the next gate. **Do not** branch into a multi-option AskUserQuestion unless the user explicitly asks for options. Proceed with whatever the user originally requested.
+
+**When the user gives an explicit command** (e.g., `/ft:observe`, `/ft:authorize`):
+
+- Run that command directly. Do not substitute or "optimize" it.
+- Only stop to ask if required arguments are missing and cannot be inferred (e.g., `--allowed` for `authorize` — governance rules require the user to state scope explicitly; never auto-fill).
+
+**When the skill must still stop and confirm**:
+
+- `/ft:authorize` — the `--allowed`, `--non-goal`, `--commit-gate`, `--closeout-gate` values must come from the user; they define the scope contract.
+- `/ft:transition --to <status>` when the target status is irreversible (e.g., `closed-out`).
+- Any operation that would delete state files or rewrite history (`/ft:repair`, `/ft:revoke-drift`).
+- Any push/PR/commit operation on the governance repo itself — CLAUDE.md's "Executing actions with care" rule applies.
+
+## Commands
+
+
 ## Commands
 
 | User command | Helper command | Purpose |
 |--------------|----------------|---------|
-| `/ft:init <program> --ref <node>` | `init <program> --ref <node>` | Create `.governance/programs/<program>/`, active gate files, and a function-tree-style root `FUNCTION_TREE.md` seeded from README feature lists, entrypoint-derived feature candidates, source modules, source TODOs, UI/page routes, navigation/menu links, API/OpenAPI routes, documented command examples, and common package/Cargo/Python/Go/Make/Just/Task commands |
+| `/ft:init [<program>] [--ref <node>]` | `init [<program>] [--ref <node>]` | Create `.governance/programs/<program>/`, active gate files, and a function-tree-style root `FUNCTION_TREE.md` seeded from README feature lists, entrypoint-derived feature candidates, source modules, source TODOs, UI/page routes, navigation/menu links, API/OpenAPI routes, documented command examples, and common package/Cargo/Python/Go/Make/Just/Task commands. `<program>` defaults to `basename(root)`; `--ref` defaults to `<program>`. The skill runs this without asking when no `.governance/` exists yet. |
 | `/ft:doc` | `doc` | Refresh root `FUNCTION_TREE.md` while preserving function-tree sections, project notes, and auto-discovered feature/roadmap candidates |
 | `/ft:new-node <program> <node-id>` | `new-node <program> <node-id> --title <text> --ref <node> [--type <kind>] [--owner-lane <lane>] [--parent <id>] [--freshness <policy>] [--track <mainline\|backlog\|optimize\|untracked>] [--mainline-id <root-node-id>] [--depth <0\|1\|2\|99>]` | Add a planning node and active gate; steward fields are optional and do not replace `status`. `--track`/`--mainline-id`/`--depth` are optional mainline-layering fields (Phase 1) |
 | `/ft:observe <program> <node-id> --evidence <path-or-note>` | `observe <program> <node-id> --evidence <path-or-note>` | Record evidence with current `HEAD`; source edits stay unauthorized |

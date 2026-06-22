@@ -10,12 +10,23 @@ const { list, many, one, fail, escapeCell, escapeRegExp, globToRegExp, matches, 
 const { run, readFile, writeFile, readJson, writeJson, readJsonSafe, renderTemplate, ensureDir, skillDir, gitHead, shellQuote, safeFileName, relPath, rel, listStagedFiles, listWorktreeFiles, collectSourceFiles } = require('./io-utils.cjs');
 const { TRACK_VALUES, loadNodes, saveNodes, loadAllNodes, loadAllNodesResolved, loadTargetNode, requireProgramDir, appendTreeNode, assertTransitionAllowed, staleEvidenceReason, nextGateFor, renderTaskCard, yamlList, yamlString, latestEvidenceHead, normalizeTrack, normalizeDepth, normalizeStewardNodeType, resolveMainlineFields, resolveMainlineRoot, isActiveStatus, stewardTypeFor } = require('./nodes.cjs');
 function initProgram(root, args, flags) {
-  const program = args[0];
+  // Program defaults to basename(root) so callers can run `ft init` with no args.
+  // Validation still applies to the resolved name — if basename(root) contains
+  // invalid chars (spaces, etc.), the user must pass an explicit <program>.
+  let program = args[0];
+  if (!program) {
+    program = path.basename(path.resolve(root));
+    // Fall back to a sanitized form only when the dir name is a valid id;
+    // otherwise we fail so the user picks an explicit name rather than
+    // silently getting something unexpected.
+  }
   if (!program || !/^[a-z0-9][a-z0-9._-]*$/i.test(program)) {
-    fail('init requires <program> using letters, numbers, dot, dash, or underscore', 2);
+    fail('init requires <program> using letters, numbers, dot, dash, or underscore (or run inside a directory whose name matches)', 2);
   }
 
-  const ref = String(flags.ref || 'unlinked');
+  // ref defaults to the program id when omitted; 'unlinked' is kept as a
+  // legacy sentinel only for explicit `--ref unlinked` invocations.
+  const ref = String(flags.ref || program);
   const description = String(flags.description || '');
   const gov = path.join(root, '.governance');
   const programs = path.join(gov, 'programs');

@@ -112,7 +112,8 @@ function main() {
 function usage(code) {
   const text = [
     'Usage:',
-    '  ft-governance.cjs init <program> --ref <function-tree-node> [--description <text>] [--no-doc] [--root <repo>]',
+    '  ft-governance.cjs init [<program>] [--ref <function-tree-node>] [--description <text>] [--no-doc] [--root <repo>]',
+    '       <program> defaults to basename(root); --ref defaults to <program>',
     '  ft-governance.cjs doc [--root <repo>]',
     '  ft-governance.cjs new-node <program> <node-id> --title <text> --ref <function-tree-node> [--type <kind>] [--owner-lane <lane>] [--parent <id>] [--freshness <policy>] [--track <mainline|backlog|optimize|untracked>] [--mainline-id <id>] [--depth <0|1|2|99>] [--root <repo>]',
     '       --type accepts: feature, capability, epic, module, component, bug, task, refactor, spike, evidence, decision, authorization, implementation, closeout, external',
