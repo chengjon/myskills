@@ -286,14 +286,16 @@ function collectSourceTodoCandidates(root, sourceRoots) {
     const lines = text.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
-      // Only match TODOs in comment context to avoid string literal false positives
-      const isCommentContext = /^\s*(#|\/\/|\/\*|<!--|;\s*|%\s*)/.test(line) ||
-        /(?:#\s*|\/\/\s*|\/\*\s*|<!--\s*|;\s*|%\s*)(?:TODO|FIXME|XXX|HACK)\b/i.test(line);
-      if (!isCommentContext) continue;
-      const match = line.match(/\b(?:TODO|FIXME|XXX|HACK)\b[:\-\s]*(.+)$/i);
+      // Only accept labeled TODO/FIXME/XXX/HACK markers: must be followed by
+      // either `(...)` (owner/tag) or `:` (explicit label). This excludes
+      // inline "TODO turn this into..." free-form comments that are usually
+      // implementation notes, not roadmap items.
+      const match = line.match(/\b(?:TODO|FIXME|XXX|HACK)\b\s*(?:\([^)]*\)\s*)?[:\-]\s*(.+)$/i);
       if (!match) continue;
       const name = cleanMarkdownText(match[1]);
       if (!isUsefulCandidateName(name)) continue;
+      // Skip vague implementation notes that aren't product-level features
+      if (/\b(?:turn this into|consider|maybe|perhaps|refactor this|fix this later|cleanup needed)\b/i.test(name)) continue;
       if (isTestFile) {
         candidates.push({
           id: slugifyCandidate(name),

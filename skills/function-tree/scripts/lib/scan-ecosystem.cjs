@@ -7,16 +7,42 @@ const { list, many, one, fail, escapeCell, escapeRegExp, globToRegExp, matches, 
 const { run, readFile, writeFile, readJson, writeJson, readJsonSafe, renderTemplate, ensureDir, skillDir, gitHead, shellQuote, safeFileName, relPath, rel, listStagedFiles, listWorktreeFiles, collectSourceFiles } = require('./io-utils.cjs');
 function collectSourceModules(root, sourceRoots) {
   const ignored = new Set(['.git', '.governance', 'node_modules', 'target', 'dist', 'build', 'coverage', '__pycache__']);
+  const sourceExt = /\.(js|jsx|ts|tsx|py|go|rs|java|kt|swift|rb|php|cs|c|cc|cpp|h|hpp)$/i;
   const modules = [];
   for (const sourceRoot of sourceRoots) {
     const absoluteRoot = path.join(root, sourceRoot);
     if (!fs.existsSync(absoluteRoot) || !fs.statSync(absoluteRoot).isDirectory()) continue;
-    for (const entry of fs.readdirSync(absoluteRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const topEntries = fs.readdirSync(absoluteRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of topEntries) {
       if (entry.name.startsWith('.') || ignored.has(entry.name)) continue;
-      const isSource = entry.isDirectory() || /\.(js|jsx|ts|tsx|py|go|rs|java|kt|swift|rb|php|cs|c|cc|cpp|h|hpp)$/i.test(entry.name);
+      const isSource = entry.isDirectory() || sourceExt.test(entry.name);
       if (!isSource) continue;
+      // Skip empty __init__.py — it's a package marker, not a real module
+      if (entry.isFile() && entry.name === '__init__.py') {
+        const initPath = path.join(absoluteRoot, entry.name);
+        if (fs.statSync(initPath).size === 0) continue;
+      }
       const relativePath = `${sourceRoot}/${entry.name}${entry.isDirectory() ? '/' : ''}`;
       modules.push({ path: relativePath });
+      // Drill one level deeper for top-level directories so submodules are visible
+      if (entry.isDirectory()) {
+        const subPath = path.join(absoluteRoot, entry.name);
+        try {
+          const subEntries = fs.readdirSync(subPath, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+          for (const sub of subEntries) {
+            if (sub.name.startsWith('.') || ignored.has(sub.name)) continue;
+            const subIsSource = sub.isDirectory() || sourceExt.test(sub.name);
+            if (!subIsSource) continue;
+            if (sub.isFile() && sub.name === '__init__.py') {
+              const initPath = path.join(subPath, sub.name);
+              if (fs.statSync(initPath).size === 0) continue;
+            }
+            const subRelative = `${relativePath}${sub.name}${sub.isDirectory() ? '/' : ''}`;
+            modules.push({ path: subRelative });
+            if (modules.length >= 48) break;
+          }
+        } catch (_) { /* permission issue, skip */ }
+      }
       if (modules.length >= 48) break;
     }
     if (modules.length >= 48) break;
