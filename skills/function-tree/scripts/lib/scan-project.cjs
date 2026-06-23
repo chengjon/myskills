@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { list, many, one, fail, escapeCell, escapeRegExp, globToRegExp, matches, gateName, firstExistingPath, formatList, existingPaths, parseDuration, expiryFromNow, titleCase, markdownTable, parseTomlSectionNames, parseTomlTableKeys, matchBracedDict, minimatchSimple, isTestSourceFile } = require('./helpers.cjs');
+const { list, many, one, fail, escapeCell, escapeRegExp, globToRegExp, matches, gateName, firstExistingPath, formatList, existingPaths, parseDuration, expiryFromNow, titleCase, markdownTable, parseTomlSectionNames, parseTomlTableKeys, matchBracedDict, minimatchSimple, isTestSourceFile, slugifyCandidate } = require('./helpers.cjs');
 const { run, readFile, writeFile, readJson, writeJson, readJsonSafe, renderTemplate, ensureDir, skillDir, gitHead, shellQuote, safeFileName, relPath, rel, listStagedFiles, listWorktreeFiles, collectSourceFiles } = require('./io-utils.cjs');
 const { collectGovernancePrograms, detectNestedProjectRoots, listContainsPyFiles, readProgramTreeMeta, detectProjectName, detectPythonPackageRoots, collectStewardPrograms } = require('./programs.cjs');
 const { collectSourceModules, collectPublicApiEntries, collectCommandEntries, collectPythonCliSubcommands, collectDocSystemInfo, collectExceptionHierarchy, collectConfigEntries, collectDependencyEntries, collectLanguageInfo, countExtensions, detectProjectVersion, collectOptionalDependencies, collectInlineDeps, collectDocCommandExamples, normalizeDocCommand, looksLikeRunnableProjectCommand, isSetupOnlyCommand, uniqueCommandExamples, collectMakeTargets, collectJustRecipes, collectTaskfileTasks, isPublicTaskName, uniqueNames } = require('./scan-ecosystem.cjs');
@@ -144,6 +144,7 @@ function collectEntrypointFeatureCandidates(uiEntries, apiEntries, commandEntrie
   }
 
   return uniqueCandidates(Array.from(groups.values()).map((group) => ({
+    id: slugifyCandidate(group.name),
     name: group.name,
     type: 'entrypoint feature',
     status: '待核验',
@@ -175,6 +176,7 @@ function collectMarkdownCandidates(root, relativePaths, mode) {
       const name = cleanMarkdownText(bulletMatch[1]);
       if (!isUsefulCandidateName(name)) continue;
       candidates.push({
+        id: slugifyCandidate(name),
         name,
         type: mode === 'planned' ? 'planned feature' : 'feature candidate',
         status: mode === 'planned' ? '待实现' : '待核验',
@@ -294,6 +296,7 @@ function collectSourceTodoCandidates(root, sourceRoots) {
       if (!isUsefulCandidateName(name)) continue;
       if (isTestFile) {
         candidates.push({
+          id: slugifyCandidate(name),
           name,
           type: 'test improvement',
           status: '待实现',
@@ -302,6 +305,7 @@ function collectSourceTodoCandidates(root, sourceRoots) {
         });
       } else {
         candidates.push({
+          id: slugifyCandidate(name),
           name,
           type: 'source TODO',
           status: '待实现',
