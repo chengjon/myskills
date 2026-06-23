@@ -100,6 +100,11 @@ function collectReadmeProductCandidates(root, relativePaths) {
     /^(分支模型|翻译流程|部署|文档|贡献|许可证|行为准则|安全|更新日志|路线图|待办|安装|配置|快速开始|开发|测试|调试|故障排查|常见问题|帮助|致谢|赞助|概述|简介)/,
   ];
   const PRODUCT_EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/u;
+  // Product-semantic keywords — an emoji-led heading must contain at least one
+  // of these to be treated as a product block rather than a process/meta section.
+  // ("Quick Start", "Documentation", "Roadmap", "Key Features" all fail this gate
+  // because the words are generic, not product-capability words.)
+  const HEADING_HAS_PRODUCT_KEYWORD = /\b(captain|omnichannel|support\s+desk|help\s+center|help\s+centre|portal|inbox|dashboard|crm|chat|messaging|campaigns?|automation|workflow|integrations?|channels?|reporting|analytics|ai\s+agent|assistant|bot|surveys?|csat|sla|teams?|macros?|custom\s+attributes|segments?|segments?|knowledge\s+base|faq|canned\s+responses|webhooks?|api|rest\s+api|graphql|sdk|widget|live\s+chat|email|voice|whatsapp|telegram|slack|linear|shopify|notion|dialogflow|salesforce|hubspot|intercom|zendesk|freshdesk|产品|功能|能力|模块|特性|客服|对话|消息|邮件|语音|机器人|帮助中心|知识库)\b/i;
   const SUB_CATEGORY_HEADINGS = /\b(collaboration|productivity|customer\s+data|segmentation|integrations?|channels?|automation|reporting|analytics|ai|artificial\s+intelligence|features)\b/i;
 
   for (const relativePath of existingPaths(root, relativePaths)) {
@@ -142,8 +147,12 @@ function collectReadmeProductCandidates(root, relativePaths) {
           continue;
         }
 
-        // Emoji-led H2/H3 heading => product block
-        if (level <= 3 && PRODUCT_EMOJI.test(raw)) {
+        // Emoji-led H2/H3 heading => product block.
+        // Two gates: emoji present AND at least one product-semantic keyword in
+        // the heading. The keyword gate is what separates "✨ Captain – AI Agent"
+        // (product) from "🚀 Quick Start" / "📚 Documentation" / "📖 Need Help?"
+        // (process/meta sections that happen to have emojis too).
+        if (level <= 3 && PRODUCT_EMOJI.test(raw) && HEADING_HAS_PRODUCT_KEYWORD.test(cleaned)) {
           flushProduct();
           currentCategory = null;
           // Strip emoji + dash separator to get clean name: "✨ Captain – AI Agent" -> "Captain"
