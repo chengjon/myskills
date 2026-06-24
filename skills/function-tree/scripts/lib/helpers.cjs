@@ -168,6 +168,23 @@ function minimatchSimple(name, pattern) {
   return new RegExp(`^${escaped}$`).test(name);
 }
 
+function slugifyCandidate(name, maxLength = 32) {
+  const text = String(name || '').toLowerCase();
+  // strip emojis and non-word noise, keep letters/digits/spaces/hyphens
+  const cleaned = text
+    .replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}]/gu, '')
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  if (!cleaned) return '';
+  // truncate on word boundary
+  const truncated = cleaned.length > maxLength
+    ? cleaned.slice(0, maxLength).replace(/-[^-]*$/, '')
+    : cleaned;
+  return `cand-${truncated || 'item'}`;
+}
+
 function isTestSourceFile(file) {
   // Test directories: test/, tests/, __tests__/, spec/, specs/, fixtures/, mocks/
   if (/(^|[\/\\])(tests?|__tests__|spec|specs|fixtures?|mocks?)[\/\\]/i.test(file)) return true;
@@ -179,4 +196,4 @@ function isTestSourceFile(file) {
   if (/(^|[\/\\])[^\/\\]*_(test|spec)\.[^\/\\]+$/i.test(file)) return true;
   return false;
 }
-module.exports = { list, many, one, fail, escapeCell, escapeRegExp, globToRegExp, matches, gateName, firstExistingPath, formatList, existingPaths, parseDuration, expiryFromNow, titleCase, markdownTable, parseTomlSectionNames, parseTomlTableKeys, matchBracedDict, minimatchSimple, isTestSourceFile };
+module.exports = { list, many, one, fail, escapeCell, escapeRegExp, globToRegExp, matches, gateName, firstExistingPath, formatList, existingPaths, parseDuration, expiryFromNow, titleCase, markdownTable, parseTomlSectionNames, parseTomlTableKeys, matchBracedDict, minimatchSimple, isTestSourceFile, slugifyCandidate };

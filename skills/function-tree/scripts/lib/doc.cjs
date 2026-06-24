@@ -3,10 +3,66 @@
 const fs = require('fs');
 const path = require('path');
 
-const { list, many, one, fail, escapeCell, escapeRegExp, globToRegExp, matches, gateName, firstExistingPath, formatList, existingPaths, parseDuration, expiryFromNow, titleCase, markdownTable, parseTomlSectionNames, parseTomlTableKeys, matchBracedDict, minimatchSimple, isTestSourceFile } = require('./helpers.cjs');
+const { list, many, one, fail, escapeCell, escapeRegExp, globToRegExp, matches, gateName, firstExistingPath, formatList, existingPaths, parseDuration, expiryFromNow, titleCase, markdownTable, parseTomlSectionNames, parseTomlTableKeys, matchBracedDict, minimatchSimple, isTestSourceFile, slugifyCandidate } = require('./helpers.cjs');
 const { run, readFile, writeFile, readJson, writeJson, readJsonSafe, renderTemplate, ensureDir, skillDir, gitHead, shellQuote, safeFileName, relPath, rel, listStagedFiles, listWorktreeFiles, collectSourceFiles } = require('./io-utils.cjs');
 const { collectGovernancePrograms, detectNestedProjectRoots, listContainsPyFiles, readProgramTreeMeta, detectProjectName, detectPythonPackageRoots, collectStewardPrograms } = require('./programs.cjs');
 const { collectProjectInfo, collectFeatureCandidates, renderFeatureOverviewLines, splitEvidenceItems, collectEntrypointFeatureCandidates, collectPlannedFeatureCandidates, collectMarkdownCandidates, headingMatchesCandidateMode, cleanMarkdownText, isUsefulCandidateName, humanizeRouteFeatureName, isDynamicRouteSegment, cleanRouteSegment, featureKey, matchingFeatureKeyForCommand, uniqueCandidates, collectSourceTodoCandidates, renderCandidateEvidenceLines } = require('./scan-project.cjs');
+const { TRACK_VALUES, loadNodes, saveNodes, loadAllNodes, loadAllNodesResolved, loadTargetNode, requireProgramDir, appendTreeNode, assertTransitionAllowed, staleEvidenceReason, nextGateFor, renderTaskCard, yamlList, yamlString, latestEvidenceHead, normalizeTrack, normalizeDepth, normalizeStewardNodeType, resolveMainlineFields, resolveMainlineRoot, isActiveStatus, stewardTypeFor } = require('./nodes.cjs');
+
+// Collect (program, node) pairs across all governance programs, sorted by
+// program name then node id. Each pair carries the raw node so the doc renderer
+// can show status, track, depth, and evidence without re-reading nodes.json.
+// This closes the P0-1 gap: FT.md previously never referenced governance nodes.
+function collectAllGovernanceNodes(root) {
+  const programsDir = path.join(root, '.governance', 'programs');
+  if (!fs.existsSync(programsDir)) return [];
+  const out = [];
+  for (const entry of fs.readdirSync(programsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const programDir = path.join(programsDir, entry.name);
+    const nodesPath = path.join(programDir, 'nodes.json');
+    if (!fs.existsSync(nodesPath)) continue;
+    for (const node of loadNodes(nodesPath)) {
+      if (!node || !node.id) continue;
+      out.push({ program: entry.name, node });
+    }
+  }
+  out.sort((a, b) => {
+    if (a.program !== b.program) return a.program.localeCompare(b.program);
+    return String(a.node.id).localeCompare(String(b.node.id));
+  });
+  return out;
+}
+
+function renderGovernanceNodeRow(entry) {
+  const n = entry.node;
+  const typeLabel = n.node_type_input && n.node_type_input !== n.node_type
+    ? `${n.node_type_input}/${n.node_type}`
+    : (n.node_type || 'external');
+  const resolved = resolveMainlineFields(n, null);
+  const track = resolved.track || n.track || 'untracked';
+  const depth = resolved.depth !== undefined ? resolved.depth : (n.depth !== undefined ? n.depth : 99);
+  const evidence = (n.evidence && n.evidence.length)
+    ? n.evidence.map((e) => e.path || e.note || '').filter(Boolean).slice(0, 1).join('; ')
+    : '-';
+  return `| ${escapeCell(n.id)} | ${escapeCell(n.title || n.id)} | ${escapeCell(entry.program)} | ${escapeCell(typeLabel)} | ${escapeCell(track)} | ${depth} | ${escapeCell(n.status || '-')} | ${escapeCell(evidence)} |`;
+}
+
+function renderCapabilityMappingRow(entry) {
+  const n = entry.node;
+  const evidence = Array.isArray(n.evidence) ? n.evidence : [];
+  const latest = evidence[evidence.length - 1];
+  const rawPath = (latest && (latest.path || latest.note)) || '';
+  if (!rawPath) return '';
+  const sources = rawPath
+    .split(/[;,]/)
+    .map((s) => s.trim())
+    .filter((s) => s && !/^README\.md/.test(s) && !/^\s*[A-Z]+:/.test(s))
+    .slice(0, 4)
+    .join('; ');
+  if (!sources) return '';
+  return `| ${escapeCell(n.id)} | ${escapeCell(n.title || n.id)} | ${escapeCell(sources)} |`;
+}
 function refreshFunctionTreeDoc(root) {
   const result = writeFunctionTreeDoc(root, {});
   const output = [
@@ -101,7 +157,7 @@ function stripGeneratedDocPreamble(value) {
 }
 
 function looksLikeFunctionTreeBody(value) {
-  return /##\s+(功能全景图|状态注册表|模块\/命令证据展开|模块依赖关系|Feature Map|Status Registry|Dependency Map)/i.test(String(value || ''));
+  return /##\s+(功能全景图|治理节点|状态注册表|模块\/命令证据展开|模块依赖关系|Feature Map|Governance Nodes|Status Registry|Dependency Map)/i.test(String(value || ''));
 }
 
 function isRefreshableGeneratedFunctionTreeBody(value) {
@@ -154,10 +210,17 @@ function renderFunctionTreeDoc(root, context, existingTreeBody, notes) {
 }
 
 function renderDefaultFunctionTreeBody(root, context, info, programs, programRows) {
+  const governanceNodes = collectAllGovernanceNodes(root);
+  const governanceNodeRows = governanceNodes.length
+    ? governanceNodes.map(renderGovernanceNodeRow)
+    : ['| - | - | - | - | - | - | 待登记 | Add nodes with `/ft:new-node <program> <node-id>`. |'];
+  const mappingRows = governanceNodes.length
+    ? governanceNodes.map(renderCapabilityMappingRow).filter((r) => r)
+    : [];
   const logProgram = context.program || (programs[0] && programs[0].name) || 'project-governance';
   const logRef = context.ref || (programs[0] && programs[0].ref) || 'unmapped';
   const featureRows = info.featureCandidates.length
-    ? info.featureCandidates.map((feature) => `| ${escapeCell(feature.name)} | ${escapeCell(feature.type)} | ${escapeCell(feature.status)} | ${escapeCell(feature.evidence)}; ${escapeCell(feature.boundary)} |`)
+    ? info.featureCandidates.map((feature) => `| \`${feature.id || slugifyCandidate(feature.name)}\` | ${escapeCell(feature.name)} | ${escapeCell(feature.type)} | ${escapeCell(feature.status)} | ${escapeCell(feature.evidence)}; ${escapeCell(feature.boundary)} |`)
     : ['| - | feature candidate | 待登记 | Add README/API/product feature bullets, then rerun `doc`. |'];
   const moduleRows = info.sourceModules.length
     ? info.sourceModules.map((module) => module.fileCount
@@ -198,7 +261,7 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     ? info.optionalDeps.map((entry) => `| \`${escapeCell(entry.group)}\` | optional dep group | 已登记 | ${entry.deps.slice(0, 6).map((d) => '`' + d + '`').join(', ')}${entry.deps.length > 6 ? ', ...' : ''} (evidence: \`${entry.evidence}\`) |`)
     : [];
   const plannedRows = info.plannedCandidates.length
-    ? info.plannedCandidates.map((feature) => `| ${escapeCell(feature.name)} | 待实现 | ${escapeCell(feature.evidence)} | ${escapeCell(feature.boundary || 'Auto-discovered planned/unfinished item; verify scope and owner before implementation.')} |`)
+    ? info.plannedCandidates.map((feature) => `| \`${feature.id || slugifyCandidate(feature.name)}\` | ${escapeCell(feature.name)} | 待实现 | ${escapeCell(feature.evidence)} | ${escapeCell(feature.boundary || 'Auto-discovered planned/unfinished item; verify scope and owner before implementation.')} |`)
     : ['| - | 待登记 | - | Add planned/unfinished features from roadmap, TODO, or product notes. |'];
   const programLines = programs.length
     ? programs.map((program) => `- Governance: ${program.name} (${program.ref || 'unmapped'}): ${program.description || 'governance program'}`)
@@ -232,13 +295,29 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     info.sourceRoots.length ? `- Source roots: ${formatList(info.sourceRoots)}` : '- Source roots: 待登记',
     info.docs.length ? `- Documentation: ${formatList(info.docs)}` : '- Documentation: 待登记',
     '',
+    '## 治理节点 (Governance Nodes)',
+    '',
+    '本区块由 `ft doc` 从 `.governance/programs/*/nodes.json` 自动生成；节点状态变化时刷新本文件即可同步。',
+    '',
+    '| Node | Title | Program | Type | Track | Depth | Status | Evidence |',
+    '|------|-------|---------|------|-------|-------|--------|----------|',
+    ...governanceNodeRows,
+    '',
+    '### 能力节点 → 模块映射 (Capability → Module Mapping)',
+    '',
+    '本区块由 `ft doc` 从治理节点的最新 evidence 路径自动派生；用 `/ft:observe` 更新 evidence 后刷新本文件即可同步。',
+    '',
+    '| Node | Title | Source Locations |',
+    '|------|-------|------------------|',
+    ...(mappingRows.length ? mappingRows : ['| - | - | _evidence 不含源码路径_ |']),
+    '',
     '## 状态注册表',
     '',
     '### 模块/能力节点',
     '',
-    '| Node | Type | Status | Evidence / Notes |',
-    '|------|------|--------|------------------|',
-    `| ${escapeCell(info.name)} | project | 已登记 | HEAD: \`${info.head || 'unknown'}\`; root: \`${root}\` |`,
+    '| Node | Name | Type | Status | Evidence / Notes |',
+    '|------|------|------|--------|------------------|',
+    `| ${escapeCell(info.name)} | ${escapeCell(info.name)} | project | 已登记 | HEAD: \`${info.head || 'unknown'}\`; root: \`${root}\` |`,
     ...featureRows,
     ...moduleRows,
     ...sourceRows,
@@ -314,8 +393,8 @@ function renderDefaultFunctionTreeBody(root, context, info, programs, programRow
     ] : []),
     '### 已设计/待实现节点',
     '',
-    '| 功能节点 | 状态 | 证据 | 边界 |',
-    '|---|---|---|---|',
+    '| ID | 功能节点 | 状态 | 证据 | 边界 |',
+    '|---|---|---|---|---|',
     ...plannedRows,
     '',
     '### 治理计划/开放节点',
