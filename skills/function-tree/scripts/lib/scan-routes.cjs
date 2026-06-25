@@ -307,8 +307,8 @@ function collectSourceRouteEntries(root, sourceRoots) {
   for (const file of collectSourceFiles(root, sourceRoots, 400)) {
     const lines = readFile(path.join(root, file)).split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
-      for (const match of sourceRouteMatches(lines[index])) {
-        entries.push(apiEntry(match.method, match.path, `${file}:${index + 1}`, 'source route'));
+      for (const match of sourceRouteMatches(lines[index], file)) {
+        entries.push(apiEntry(match.method, match.path, `${file}:${index + 1}`, match.framework || 'source route'));
         if (entries.length >= 64) return entries;
       }
     }
@@ -316,20 +316,111 @@ function collectSourceRouteEntries(root, sourceRoots) {
   return entries;
 }
 
-function sourceRouteMatches(line) {
+// Web framework detector registry. Each entry is a self-contained detector that
+// knows its own routing syntax, scope constraints (e.g. Django only in urls.py),
+// and method-resolution rules. New frameworks plug in here without touching the
+// main loop. (FT_SKILL_AUDIT Fix-1: replaces hardcoded Express/Fastify regex.)
+const WEB_FRAMEWORK_DETECTORS = [
+  {
+    name: 'fastapi',
+    routePatterns: [
+      /@\s*(?:app|router|api_router|api)\s*\.\s*(get|post|put|patch|delete|options|head)\s*\(\s*['"`]([^'"`]+)['"`]/ig,
+    ],
+  },
+  {
+    name: 'flask',
+    routePatterns: [
+      /@\s*(?:app|bp|router|blueprint|api)\s*\.\s*route\s*\(\s*['"`]([^'"`]+)['"`]\s*(?:,\s*methods\s*=\s*\[([^\]]+)\])?/ig,
+    ],
+    defaultMethod: 'GET',
+    parseMethods: (methodsArg) => methodsArg ? methodsArg.match(/['"`](\w+)['"`]/g)?.map((s) => s.replace(/['"`]/g, '').toUpperCase()) : null,
+  },
+  {
+    name: 'django',
+    routePatterns: [
+      /\b(?:path|re_path|url|register)\s*\(\s*[r]?['"`]([^'"`]+)['"`]/ig,
+    ],
+    defaultMethod: 'GET',
+    scopeFile: /(?:^|[\\/])urls\.py$/,
+  },
+  {
+    name: 'express-fastify-koa',
+    routePatterns: [
+      /\b(?:app|router|server|fastify)\s*\.\s*(get|post|put|patch|delete|options|head)\s*\(\s*['"`]([^'"`]+)['"`]/ig,
+    ],
+  },
+  {
+    name: 'nestjs',
+    routePatterns: [
+      /@(?:Get|Post|Put|Patch|Delete|Head|Options|All)\s*\(\s*['"`]([^'"`]+)['"`]/ig,
+    ],
+    defaultMethod: null, // method derived from decorator name via capture group below
+    methodFromDecorator: true,
+  },
+  {
+    name: 'spring',
+    routePatterns: [
+      /@(?:Request(?:Get|Post|Put|Patch|Delete|Head|Options)?Mapping|RequestMapping)\s*\(\s*(?:value\s*=\s*|path\s*=\s*)?["']([^"']+)['"]/ig,
+    ],
+    defaultMethod: 'GET',
+    methodFromDecorator: true, // @GetMapping → GET, @PostMapping → POST
+  },
+  {
+    name: 'gin-echo-chi',
+    routePatterns: [
+      /\b(?:r|router|e|echo|mux)\s*\.\s*(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*\(\s*['"`]([^'"`]+)['"`]/ig,
+    ],
+  },
+  {
+    name: 'axum-actix',
+    routePatterns: [
+      /\.route\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*(get|post|put|patch|delete|options|head)\s*\(/ig,
+    ],
+    methodInGroup: 2,
+    pathGroup: 1,
+  },
+  {
+    name: 'rails',
+    routePatterns: [
+      /\b(?:get|post|put|patch|delete)\s+['"]([^'"]+)['"]\s*(?:=>|,\s*to:)/ig,
+      /\bmatch\s+['"]([^'"]+)['"]\s*,\s*(?:via:\s*\[([^\]]+)\]|to:)/ig,
+    ],
+    defaultMethod: 'GET',
+  },
+];
+
+function sourceRouteMatches(line, filePath) {
   const matches = [];
-  const patterns = [
-    /\b(?:app|router|server|fastify)\s*\.\s*(get|post|put|patch|delete|options|head)\s*\(\s*['"`]([^'"`]+)['"`]/ig,
-    /@\s*(?:app|router|api)\s*\.\s*(get|post|put|patch|delete|options|head)\s*\(\s*['"`]([^'"`]+)['"`]/ig,
-  ];
-  for (const pattern of patterns) {
-    for (const match of line.matchAll(pattern)) {
-      if (isUsefulApiPath(match[2])) matches.push({ method: match[1], path: match[2] });
+  for (const fw of WEB_FRAMEWORK_DETECTORS) {
+    if (fw.scopeFile && filePath && !fw.scopeFile.test(filePath)) continue;
+    for (const pattern of fw.routePatterns) {
+      pattern.lastIndex = 0;
+      for (const m of line.matchAll(pattern)) {
+        const pathGroup = fw.pathGroup || (fw.methodFromDecorator ? 1 : 2);
+        const path = m[pathGroup];
+        if (!path || !isUsefulApiPath(path)) continue;
+
+        let method = fw.defaultMethod || 'GET';
+        if (fw.parseMethods && m[2]) {
+          const parsed = fw.parseMethods(m[2]);
+          if (parsed && parsed.length > 0) method = parsed[0];
+        } else if (fw.methodFromDecorator) {
+          // Derive method from decorator name: @GetMapping → GET, @PostMapping → POST
+          const decoratorMatch = m[0].match(/@(Get|Post|Put|Patch|Delete|Head|Options|All|Request(?:Get|Post|Put|Patch|Delete|Head|Options)?Mapping)/i);
+          if (decoratorMatch) {
+            const dn = decoratorMatch[1].toLowerCase();
+            const methodMatch = dn.match(/(get|post|put|patch|delete|head|options)/);
+            if (methodMatch) method = methodMatch[1].toUpperCase();
+          }
+        } else if (fw.methodInGroup) {
+          method = m[fw.methodInGroup].toUpperCase();
+        } else if (m[1] && isHttpMethod(m[1])) {
+          method = m[1].toUpperCase();
+        }
+        matches.push({ method, path, framework: fw.name });
+      }
     }
   }
-
-  const axumMatch = line.match(/\.route\s*\(\s*['"`]([^'"`]+)['"`]\s*,\s*(get|post|put|patch|delete|options|head)\s*\(/i);
-  if (axumMatch && isUsefulApiPath(axumMatch[1])) matches.push({ method: axumMatch[2], path: axumMatch[1] });
   return matches;
 }
 

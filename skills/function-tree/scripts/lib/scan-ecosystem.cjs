@@ -5,18 +5,156 @@ const path = require('path');
 
 const { list, many, one, fail, escapeCell, escapeRegExp, globToRegExp, matches, gateName, firstExistingPath, formatList, existingPaths, parseDuration, expiryFromNow, titleCase, markdownTable, parseTomlSectionNames, parseTomlTableKeys, matchBracedDict, minimatchSimple, isTestSourceFile } = require('./helpers.cjs');
 const { run, readFile, writeFile, readJson, writeJson, readJsonSafe, renderTemplate, ensureDir, skillDir, gitHead, shellQuote, safeFileName, relPath, rel, listStagedFiles, listWorktreeFiles, collectSourceFiles } = require('./io-utils.cjs');
+// Fix-4 (FT_SKILL_AUDIT generic): Classify a directory as a data-only directory.
+// Returns true when the directory contains ≥3 data files AND has >2× more data
+// files than source files. This is the generic signal that the directory is a
+// dataset (CSV/JSON/Parquet fixtures) rather than a code module that happens to
+// have a couple of static JSON configs alongside.
+//
+// Data extensions cover common tabular, binary, and config formats across
+// Python data science, ML, and research stacks. We exclude `.json` from the
+// data set because in Node/web projects JSON is more often config than data;
+// `.csv`/`.tsv`/`.parquet`/`.feather`/`.npy`/`.h5` are unambiguous data.
+function isDataDirectory(dirPath) {
+  const DATA_EXTS = new Set([
+    '.csv', '.tsv', '.parquet', '.feather', '.npy', '.npz',
+    '.h5', '.hdf5', '.pkl', '.pickle', '.arrow', '.orc',
+    '.db', '.sqlite', '.sqlite3',
+    '.wav', '.mp3', '.flac', '.mp4', '.avi', '.mov',       // media datasets
+    '.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp',       // image datasets
+  ]);
+  const CODE_EXTS = new Set([
+    '.py', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs',
+    '.rb', '.go', '.rs', '.java', '.kt', '.swift',
+    '.php', '.cs', '.c', '.cc', '.cpp', '.h', '.hpp',
+  ]);
+  let dataCount = 0;
+  let codeCount = 0;
+  let entries;
+  try {
+    entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  } catch (_) {
+    return false;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (entry.name.startsWith('.')) continue;
+    const ext = path.extname(entry.name).toLowerCase();
+    if (DATA_EXTS.has(ext)) dataCount += 1;
+    else if (CODE_EXTS.has(ext)) codeCount += 1;
+  }
+  if (dataCount < 3) return false;
+  if (codeCount === 0) return dataCount >= 3;
+  return dataCount > codeCount * 2;
+}
+
+// Detect which directory names are "infrastructure" (no feature signal) for
+// the current project's stack. A directory like `helpers/` is infrastructure
+// in Rails but might be a real business module in a Node service. We pick the
+// blacklist based on which stack manifest files are present at the repo root,
+// and union them if multiple stacks coexist (e.g. Ruby + JS in a monorepo).
+//
+// Returns a Set<string>. Empty set means "no known infra dirs for this stack"
+// — the feature tree then lists every directory without filtering, which is
+// safe (just noisier) for stacks we don't recognize.
+function detectStackInfrastructure(root) {
+  const infra = new Set();
+  // Universal: build artifacts and meta directories that are never features
+  // in any stack.
+  for (const u of ['templates', 'samples', 'mocks', 'stubs', 'fixtures', 'scaffolds', '__snapshots__']) {
+    infra.add(u);
+  }
+  // Ruby / Rails: Gemfile or config/application.rb + app/ layout
+  if (fs.existsSync(path.join(root, 'Gemfile')) || fs.existsSync(path.join(root, 'config', 'application.rb'))) {
+    for (const r of ['assets', 'views', 'view_models', 'helpers', 'presenters', 'mailers', 'concerns', 'channels', 'packs', 'javascript/packs', 'channels_config', 'factories', 'migrate', 'migrate_data', 'schema_migrations', 'generators']) {
+      infra.add(r);
+    }
+  }
+  // Python: setup.py / pyproject.toml / requirements.txt — Django/Flask layout
+  if (fs.existsSync(path.join(root, 'setup.py')) || fs.existsSync(path.join(root, 'pyproject.toml')) || fs.existsSync(path.join(root, 'requirements.txt'))) {
+    // Django migrations are infra; Flask usually has no such layout.
+    // `.egg-info`/`.dist-info` are build metadata, `venv`/`env` are local virtualenvs,
+    // `test_data`/`testdata` are fixtures, and `__pycache__` is bytecode cache.
+    for (const p of ['migrations', 'migrations_data', 'fixtures', 'wsgi', 'asgi', 'test_data', 'testdata', 'venv', 'env', '.venv', '.env']) {
+      infra.add(p);
+    }
+  }
+  // Node / TypeScript: package.json — Next.js / Nuxt pages+ are real features,
+  // but __tests__, __mocks__, dist are infra
+  if (fs.existsSync(path.join(root, 'package.json'))) {
+    for (const n of ['__tests__', '__mocks__', '__fixtures__', 'dist', 'build', '.next', '.nuxt', 'node_modules']) {
+      infra.add(n);
+    }
+  }
+  // Go: go.mod — no standard infra dirs; testdata is the only convention
+  if (fs.existsSync(path.join(root, 'go.mod'))) {
+    infra.add('testdata');
+  }
+  // Rust: Cargo.toml — no standard infra dirs
+  // (no additions)
+  return infra;
+}
+
 function collectSourceModules(root, sourceRoots) {
   const ignored = new Set(['.git', '.governance', 'node_modules', 'target', 'dist', 'build', 'coverage', '__pycache__']);
+  // Infrastructure dirs that carry no feature signal — but ONLY in stacks where
+  // the name is a known framework convention. Applying a Rails-only blacklist
+  // to a Python or Go project would silently drop real capability directories.
+  // (FT_SKILL_REVIEW P1#7, generalized for cross-stack use in v2.)
+  const stackInfra = detectStackInfrastructure(root);
+  const isInfrastructure = (name) => stackInfra.has(name)
+    || name.endsWith('.egg-info')    // Python build metadata (e.g. stockstats.egg-info)
+    || name.endsWith('.dist-info')   // Python wheel metadata
+    || name.endsWith('.egg');        // Python egg builds
+  const sourceExt = /\.(js|jsx|ts|tsx|py|go|rs|java|kt|swift|rb|php|cs|c|cc|cpp|h|hpp)$/i;
   const modules = [];
   for (const sourceRoot of sourceRoots) {
     const absoluteRoot = path.join(root, sourceRoot);
     if (!fs.existsSync(absoluteRoot) || !fs.statSync(absoluteRoot).isDirectory()) continue;
-    for (const entry of fs.readdirSync(absoluteRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const topEntries = fs.readdirSync(absoluteRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of topEntries) {
       if (entry.name.startsWith('.') || ignored.has(entry.name)) continue;
-      const isSource = entry.isDirectory() || /\.(js|jsx|ts|tsx|py|go|rs|java|kt|swift|rb|php|cs|c|cc|cpp|h|hpp)$/i.test(entry.name);
+      // Skip infrastructure dirs at the top level (e.g. app/assets/, app/views/)
+      if (entry.isDirectory() && isInfrastructure(entry.name)) continue;
+      // Fix-4 (FT_SKILL_AUDIT generic): Skip data-only directories. A directory
+      // full of CSV/JSON/Parquet/feather files is a dataset, not a code module.
+      // We compute the data-vs-code ratio: dirs with ≥3 data files and >2× more
+      // data files than code files are classified as data dirs and dropped.
+      // Threshold avoids dropping dirs that happen to contain a couple of JSON
+      // configs alongside real code.
+      if (entry.isDirectory() && isDataDirectory(path.join(absoluteRoot, entry.name))) continue;
+      const isSource = entry.isDirectory() || sourceExt.test(entry.name);
       if (!isSource) continue;
+      // Skip empty __init__.py — it's a package marker, not a real module
+      if (entry.isFile() && entry.name === '__init__.py') {
+        const initPath = path.join(absoluteRoot, entry.name);
+        if (fs.statSync(initPath).size === 0) continue;
+      }
       const relativePath = `${sourceRoot}/${entry.name}${entry.isDirectory() ? '/' : ''}`;
       modules.push({ path: relativePath });
+      // Drill one level deeper for top-level directories so submodules are visible
+      if (entry.isDirectory()) {
+        const subPath = path.join(absoluteRoot, entry.name);
+        try {
+          const subEntries = fs.readdirSync(subPath, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+          for (const sub of subEntries) {
+            if (sub.name.startsWith('.') || ignored.has(sub.name)) continue;
+            // Skip infrastructure subdirs too (e.g. app/assets/stylesheets/)
+            if (sub.isDirectory() && isInfrastructure(sub.name)) continue;
+            // Fix-4: also skip data-only subdirectories
+            if (sub.isDirectory() && isDataDirectory(path.join(subPath, sub.name))) continue;
+            const subIsSource = sub.isDirectory() || sourceExt.test(sub.name);
+            if (!subIsSource) continue;
+            if (sub.isFile() && sub.name === '__init__.py') {
+              const initPath = path.join(subPath, sub.name);
+              if (fs.statSync(initPath).size === 0) continue;
+            }
+            const subRelative = `${relativePath}${sub.name}${sub.isDirectory() ? '/' : ''}`;
+            modules.push({ path: subRelative });
+            if (modules.length >= 48) break;
+          }
+        } catch (_) { /* permission issue, skip */ }
+      }
       if (modules.length >= 48) break;
     }
     if (modules.length >= 48) break;
@@ -278,7 +416,132 @@ function collectDocSystemInfo(root) {
     systems.push({ system: 'Doxygen', evidence: 'Doxyfile', detail: 'C/C++ documentation generator' });
   }
 
+  // Fix-6 (FT_SKILL_AUDIT generic): Markdown docs fallback. Many research/internal
+  // projects keep docs as plain Markdown in `docs/` without any site generator.
+  // When we find a `docs/` directory with ≥3 .md files and no recognized site
+  // generator (Sphinx/MkDocs/Docusaurus/Jekyll), register a fallback entry so
+  // the documentation system isn't invisible in the feature tree.
+  if (!systems.length) {
+    const docsDirs = existingPaths(root, ['docs', 'doc', 'documentation']);
+    for (const docsDir of docsDirs) {
+      let mdCount = 0;
+      try {
+        for (const entry of fs.readdirSync(path.join(root, docsDir))) {
+          if (entry.toLowerCase().endsWith('.md')) mdCount += 1;
+          if (mdCount >= 3) break;
+        }
+      } catch (_) { /* ignore */ }
+      if (mdCount >= 3) {
+        systems.push({
+          system: 'Markdown docs (no site generator)',
+          evidence: `${docsDir}/`,
+          detail: `Plain Markdown documentation (${mdCount}+ .md files)`,
+        });
+        break;
+      }
+    }
+  }
+
   return systems;
+}
+
+// Fix-7 (FT_SKILL_AUDIT generic): Detect deployment capability — Dockerfiles,
+// compose files, Kubernetes manifests, Helm charts, CI/CD workflows, Terraform,
+// Procfile, etc. These indicate the project has deployment/packaging capability
+// even when no README mentions it.
+function collectDeploymentCapabilityCandidates(root) {
+  const entries = [];
+  const seen = new Set();
+  const push = (entry) => {
+    const key = entry.type + ':' + entry.evidence;
+    if (seen.has(key)) return;
+    seen.add(key);
+    entries.push(entry);
+  };
+
+  // Container images
+  for (const df of existingPaths(root, ['Dockerfile', 'Dockerfile.prod', 'Dockerfile.dev', 'docker/Dockerfile', 'docker/Dockerfile.prod', 'deploy/Dockerfile'])) {
+    push({ type: 'container image', evidence: df, detail: 'Docker image build definition' });
+  }
+  for (const compose of existingPaths(root, ['docker-compose.yml', 'docker-compose.yaml', 'docker-compose.prod.yml', 'docker-compose.staging.yml', 'compose.yml', 'compose.yaml'])) {
+    push({ type: 'container compose', evidence: compose, detail: 'Multi-container orchestration' });
+  }
+
+  // Kubernetes manifests
+  for (const k8sDir of existingPaths(root, ['k8s', 'kubernetes', 'deploy/kubernetes', 'deploy/k8s', 'manifests'])) {
+    let yamlCount = 0;
+    try {
+      for (const entry of fs.readdirSync(path.join(root, k8sDir))) {
+        if (/\.(ya?ml|json)$/i.test(entry)) yamlCount += 1;
+      }
+    } catch (_) { /* ignore */ }
+    if (yamlCount > 0) {
+      push({ type: 'kubernetes manifests', evidence: `${k8sDir}/`, detail: `${yamlCount} Kubernetes manifest file${yamlCount > 1 ? 's' : ''}` });
+    }
+  }
+
+  // Helm charts
+  for (const helmDir of existingPaths(root, ['helm', 'chart', 'charts', 'deploy/helm'])) {
+    if (fs.existsSync(path.join(root, helmDir, 'Chart.yaml'))) {
+      push({ type: 'helm chart', evidence: `${helmDir}/Chart.yaml`, detail: 'Helm chart package definition' });
+    }
+  }
+
+  // CI/CD workflows
+  for (const wfDir of existingPaths(root, ['.github/workflows', '.gitlab-ci', '.circleci/config.yml'])) {
+    if (wfDir === '.circleci/config.yml') {
+      push({ type: 'ci pipeline', evidence: wfDir, detail: 'CircleCI pipeline configuration' });
+    } else {
+      let workflowCount = 0;
+      try {
+        for (const entry of fs.readdirSync(path.join(root, wfDir))) {
+          if (/\.(ya?ml|yaml)$/i.test(entry)) workflowCount += 1;
+        }
+      } catch (_) { /* ignore */ }
+      if (workflowCount > 0) {
+        const platform = wfDir.startsWith('.github') ? 'GitHub Actions' : (wfDir.startsWith('.gitlab') ? 'GitLab CI' : 'CI');
+        push({ type: 'ci pipeline', evidence: `${wfDir}/`, detail: `${platform} (${workflowCount} workflow${workflowCount > 1 ? 's' : ''})` });
+      }
+    }
+  }
+
+  // Infrastructure-as-code
+  for (const tfDir of existingPaths(root, ['terraform', 'tf', 'infra', 'infrastructure', 'deploy/terraform', 'iac'])) {
+    let tfCount = 0;
+    try {
+      for (const entry of fs.readdirSync(path.join(root, tfDir))) {
+        if (/\.tf$/i.test(entry)) tfCount += 1;
+      }
+    } catch (_) { /* ignore */ }
+    if (tfCount > 0) {
+      push({ type: 'iac', evidence: `${tfDir}/`, detail: `Terraform (${tfCount} .tf file${tfCount > 1 ? 's' : ''})` });
+    }
+  }
+  // Pulumi
+  for (const pulDir of existingPaths(root, ['pulumi', 'deploy/pulumi'])) {
+    if (fs.existsSync(path.join(root, pulDir, 'Pulumi.yaml')) || fs.existsSync(path.join(root, pulDir, 'index.ts')) || fs.existsSync(path.join(root, pulDir, '__main__.py'))) {
+      push({ type: 'iac', evidence: `${pulDir}/`, detail: 'Pulumi infrastructure-as-code' });
+    }
+  }
+
+  // PaaS / serverless
+  for (const paas of existingPaths(root, ['Procfile', 'app.json', 'vercel.json', 'netlify.toml', 'render.yaml', 'fly.toml', 'railway.json', 'heroku.yml', 'samconfig.toml', 'template.yaml'])) {
+    const platform = ({
+      'Procfile': 'Heroku/Foreman',
+      'app.json': 'Heroku',
+      'vercel.json': 'Vercel',
+      'netlify.toml': 'Netlify',
+      'render.yaml': 'Render',
+      'fly.toml': 'Fly.io',
+      'railway.json': 'Railway',
+      'heroku.yml': 'Heroku',
+      'samconfig.toml': 'AWS SAM',
+      'template.yaml': 'AWS SAM/CloudFormation',
+    })[paas] || 'PaaS';
+    push({ type: 'paas deployment', evidence: paas, detail: `${platform} deployment configuration` });
+  }
+
+  return entries.slice(0, 16);
 }
 
 function collectExceptionHierarchy(root, sourceRoots) {
@@ -808,4 +1071,4 @@ function uniqueNames(values, limit) {
   }
   return names;
 }
-module.exports = { collectSourceModules, collectPublicApiEntries, collectCommandEntries, collectPythonCliSubcommands, collectDocSystemInfo, collectExceptionHierarchy, collectConfigEntries, collectDependencyEntries, collectLanguageInfo, countExtensions, detectProjectVersion, collectOptionalDependencies, collectInlineDeps, collectDocCommandExamples, normalizeDocCommand, looksLikeRunnableProjectCommand, isSetupOnlyCommand, uniqueCommandExamples, collectMakeTargets, collectJustRecipes, collectTaskfileTasks, isPublicTaskName, uniqueNames };
+module.exports = { collectSourceModules, collectPublicApiEntries, collectCommandEntries, collectPythonCliSubcommands, collectDocSystemInfo, collectExceptionHierarchy, collectConfigEntries, collectDependencyEntries, collectLanguageInfo, countExtensions, detectProjectVersion, collectOptionalDependencies, collectInlineDeps, collectDocCommandExamples, normalizeDocCommand, looksLikeRunnableProjectCommand, isSetupOnlyCommand, uniqueCommandExamples, collectMakeTargets, collectJustRecipes, collectTaskfileTasks, isPublicTaskName, uniqueNames, isDataDirectory, collectDeploymentCapabilityCandidates };
