@@ -6,6 +6,11 @@ const path = require('path');
 const { list, many, one, fail, escapeCell, escapeRegExp, globToRegExp, matches, gateName, firstExistingPath, formatList, existingPaths, parseDuration, expiryFromNow, titleCase, markdownTable, parseTomlSectionNames, parseTomlTableKeys, matchBracedDict, minimatchSimple, isTestSourceFile, slugifyCandidate } = require('./helpers.cjs');
 const { run, readFile, writeFile, readJson, writeJson, readJsonSafe, renderTemplate, ensureDir, skillDir, gitHead, shellQuote, safeFileName, relPath, rel, listStagedFiles, listWorktreeFiles, collectSourceFiles } = require('./io-utils.cjs');
 const { collectGovernancePrograms, detectNestedProjectRoots, listContainsPyFiles, readProgramTreeMeta, detectProjectName, detectPythonPackageRoots, collectStewardPrograms } = require('./programs.cjs');
+// FT_REVIEW 盲区 A/B/C/D + E5 — discovery heuristics for pkg-root subpackages,
+// README headings, manifest entry-points (double-evidence), untracked worktree
+// files, CHANGELOG releases, and CI/Make gate candidates. Lives in a separate
+// module so it can be unit-tested in isolation.
+const { collectPkgManifestCandidates } = require('./scan-pkg-manifest.cjs');
 const { collectSourceModules, collectPublicApiEntries, collectCommandEntries, collectPythonCliSubcommands, collectDocSystemInfo, collectExceptionHierarchy, collectConfigEntries, collectDependencyEntries, collectLanguageInfo, countExtensions, detectProjectVersion, collectOptionalDependencies, collectInlineDeps, collectDocCommandExamples, normalizeDocCommand, looksLikeRunnableProjectCommand, isSetupOnlyCommand, uniqueCommandExamples, collectMakeTargets, collectJustRecipes, collectTaskfileTasks, isPublicTaskName, uniqueNames, collectDeploymentCapabilityCandidates } = require('./scan-ecosystem.cjs');
 const { collectUiEntries, collectFileBasedUiEntries, detectSubdirs, nextAppRouteFromFileRelative, nextPagesRouteFromFileRelative, svelteKitRouteFromFileRelative, collectFilesUnder, isPathlessUiSegment, collectNavigationUiEntries, isNavigationUiFile, sourceNavigationRouteMatches, collectSourceUiRouteEntries, sourceUiRouteMatches, uiEntry, normalizeUiRoute, isUsefulUiRoute, uniqueUiEntries, collectApiEntries, collectOpenApiEntries, collectSourceRouteEntries, sourceRouteMatches, apiEntry, isHttpMethod, isUsefulApiPath, uniqueApiEntries } = require('./scan-routes.cjs');
 function collectProjectInfo(root) {
@@ -72,10 +77,23 @@ function collectProjectInfo(root) {
   const commandEntries = collectCommandEntries(root);
   const uiEntries = collectUiEntries(root, sourceRoots);
   const apiEntries = collectApiEntries(root, sourceRoots);
+  // FT_REVIEW 盲区 A/B/C/D + E5 — collect pkg-root subpackages, README H2/H3
+  // + anchor links, manifest entry-points (double-evidence), CHANGELOG
+  // releases, worktree untracked files, and CI/Make gate candidates. The
+  // dispatcher returns featureLike + plannedLike buckets so untracked worktree
+  // files end up in plannedCandidates (待实现) while everything else augments
+  // featureCandidates (where 声明实现 / 代码存在 / 待核验 live).
+  const pm = collectPkgManifestCandidates(root, sourceRoots);
   const featureCandidates = uniqueCandidates([
     ...collectFeatureCandidates(root),
     ...collectEntrypointFeatureCandidates(uiEntries, apiEntries, commandEntries),
+    ...pm.featureLike,
   ], 48);
+  const plannedCandidates = uniqueCandidates([
+    ...collectPlannedFeatureCandidates(root, sourceRoots),
+    ...pm.plannedLike,
+  ], 32);
+  const pmCoverage = { ...pm.coverage, gateCandidates: pm.gateCandidates.length };
 
   return {
     name: detectProjectName(root),
@@ -84,7 +102,7 @@ function collectProjectInfo(root) {
     docs,
     sourceRoots,
     featureCandidates,
-    plannedCandidates: collectPlannedFeatureCandidates(root, sourceRoots),
+    plannedCandidates,
     publicApiEntries: collectPublicApiEntries(root, sourceRoots),
     sourceModules: collectSourceModules(root, sourceRoots),
     commandEntries,
@@ -102,6 +120,10 @@ function collectProjectInfo(root) {
     // Fix-5: project-level lifecycle signals (deprecation/lock). Used to flag
     // the whole project or specific feature candidates as DEPRECATED/LOCKED.
     lifecycleSignals: collectLifecycleSignals(root),
+    // FT_REVIEW: gate candidates (ci:*, make:*, just:*, task:*) surfaced as
+    // authorize --commit-gate @ci hints; coverage feeds Discovery Summary.
+    gateCandidates: pm.gateCandidates,
+    coverage: pmCoverage,
   };
 }
 

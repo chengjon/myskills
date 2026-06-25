@@ -5,7 +5,7 @@ const path = require('path');
 
 const { cmdDriftCheck, cmdAcceptDrift, cmdRevokeDrift } = require('./lib/commands-drift.cjs');
 const { cmdSessionStart, cmdPreEdit } = require('./lib/commands-hooks.cjs');
-const { initProgram, newNode, newNodeBatch, reparentNode, observeNode, authorizeNode, transitionNode, closeoutNode } = require('./lib/commands-nodes.cjs');
+const { initProgram, newNode, newNodeBatch, reparentNode, observeNode, authorizeNode, transitionNode, closeoutNode, cmdSuggestNodes, cmdPromote } = require('./lib/commands-nodes.cjs');
 const { printStatus, printGate, cmdConfig, cmdMainline, cmdLocate, cmdMap, installGuard, repairActiveGates } = require('./lib/commands-query.cjs');
 const { refreshFunctionTreeDoc, writeFunctionTreeDoc, backupFunctionTreeDoc, extractProjectNotes, extractExistingFunctionTreeBody, extractPreservedPreviousFunctionTree, stripGeneratedFunctionTreeSection, stripFunctionTreeTitle, stripGeneratedDocPreamble, looksLikeFunctionTreeBody, isRefreshableGeneratedFunctionTreeBody, defaultProjectNotes, renderFunctionTreeDoc, renderDefaultFunctionTreeBody } = require('./lib/doc.cjs');
 const { activeGateFromNode, upsertActiveGate, syncActiveGates, loadActiveGates, normalizeGates } = require('./lib/gates.cjs');
@@ -34,6 +34,16 @@ function main() {
         break;
       case 'new-node-batch':
         newNodeBatch(root, parsed.args, parsed.flags);
+        break;
+      case 'suggest-nodes':
+        cmdSuggestNodes(root, parsed.args, parsed.flags);
+        break;
+      case 'promote-pkgs':
+      case 'promote-readme':
+      case 'promote-entrypoints':
+      case 'promote-untracked':
+      case 'promote-changelog':
+        cmdPromote(root, parsed.args, { ...parsed.flags, __promoteCommand: parsed.command });
         break;
       case 'reparent':
         reparentNode(root, parsed.args, parsed.flags);
@@ -119,6 +129,18 @@ function usage(code) {
     '       --type accepts: feature, capability, epic, module, component, bug, task, refactor, spike, evidence, decision, authorization, implementation, closeout, external',
     '  ft-governance.cjs new-node-batch <program> --from-dirs <dir> [--id-prefix <text>] [--pattern <glob>] [--parent <id>] [--track <t>] [--mainline-id <id>] [--depth <n>] [--type <kind>] [--dry-run] [--root <repo>]',
     '       walks <dir> one level deep and creates one node per subdir; node id = <id-prefix><subdir>, title = subdir, ref = <dir>/<subdir>',
+    '  ft-governance.cjs suggest-nodes <program> [--yes] [--dry-run] [--root <repo>]',
+    '       review auto-discovered candidates as a node draft (README features → mainline depth 0; route/model clusters → backlog depth 1); --yes batch-imports',
+    '  ft-governance.cjs promote-pkgs <program> [--yes] [--dry-run] [--root <repo>]',
+    '       promote pkg-root first-level subpackages (盲区 A) into planning nodes',
+    '  ft-governance.cjs promote-readme <program> [--yes] [--dry-run] [--root <repo>]',
+    '       promote README H2/H3 headings (盲区 B) into planning nodes',
+    '  ft-governance.cjs promote-entrypoints <program> [--yes] [--dry-run] [--root <repo>]',
+    '       promote manifest entry-points (盲区 C) — double-evidence ones become mainline features',
+    '  ft-governance.cjs promote-untracked <program> [--yes] [--dry-run] [--root <repo>]',
+    '       promote git worktree untracked/staged files (盲区 D) into backlog planning nodes',
+    '  ft-governance.cjs promote-changelog <program> [--yes] [--dry-run] [--root <repo>]',
+    '       promote CHANGELOG release bullets (E5) into planning nodes',
     '  ft-governance.cjs reparent <program> <node-id> --parent <id> [--mainline-id <id>] [--depth <n>] [--track <t>] [--root <repo>]',
     '       atomically reparent an existing node without hand-editing nodes.json (fixes parallel-mainline violations)',
     '  ft-governance.cjs observe <program> <node-id> --evidence <path-or-note> [--kind <kind>] [--note <text>] [--root <repo>]',
