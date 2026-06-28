@@ -85,7 +85,9 @@ To reduce friction, the skill applies these defaults instead of stopping to ask:
 | `/ft:drift-check` | `drift-check --files <a,b,c> \| --staged` | Strict drift detector. Exit 0 = all files on mainline (or backlog/optimize with warning); exit 1 = any UNTRACKED file; exit 2 = bad args. Outputs JSON lines per file + summary |
 | `/ft:accept-drift` | `accept-drift --reason <text> --files <a,b,c> [--expires <spec>] [--mainline <id\|none>] [--by <name>]` | Phase 3. Write a temporary drift-acceptance record binding files to the current active mainline. `--expires` default `30d`; `0` for permanent; format `<N><s\|m\|h\|d\|w>`. Files must exist on disk. See Phase 3 section for binding semantics |
 | `/ft:revoke-drift` | `revoke-drift --id <acceptance-id>` | Phase 3. Mark an acceptance `revoked` (record kept for audit). Exit 1 if id not found or already revoked |
-| `/ft:config` | `config [list\|get\|set] [--key <name>] [--value <text>]` | Phase 4. Read/write `.governance/config.json`. Keys: `drift_check_mode` (hard/soft/off), `hooks_mode` (on/off), `mainline_warning` (bool), `auto_accept_suggest` (bool). Env vars `FT_DRIFT_CHECK_MODE` / `FT_HOOKS_MODE` / `FT_MAINLINE_WARNING` / `FT_AUTO_ACCEPT_SUGGEST` override file values |
+| `/ft:config` | `config [list\|get\|set] [--key <name>] [--value <text>]` | Phase 4. Read/write `.governance/config.json`. Keys: `drift_check_mode` (hard/soft/off), `hooks_mode` (on/off), `mainline_warning` (bool), `auto_accept_suggest` (bool), `project_profile` (`auto` or one of 12 enum values). Env vars `FT_DRIFT_CHECK_MODE` / `FT_HOOKS_MODE` / `FT_MAINLINE_WARNING` / `FT_AUTO_ACCEPT_SUGGEST` / `FT_PROJECT_PROFILE` override file values. `config list` prints the resolved profile under `project_profile_resolved` |
+| `/ft:diff --before <ref> --after <ref>` | `diff --before <ref> --after <ref>` | Compare candidate JSON snapshots persisted by `ft doc` to `.governance/programs/<program>/candidates.json`. `<ref>` = `head` \| `prev` \| `<sha>:<path>` \| `<file-path>`. Falls back to Markdown section counting when snapshots are missing. Prints counts delta, per-`source_category` and per-`kind` deltas, and added/removed candidate names |
+| `/ft:doc [--report]` | `doc [--report]` | Refresh root `FUNCTION_TREE.md`. Default prints a concise Discovery Quality Report to stdout; `--report` also persists the full report body into the doc under a `<!-- function-tree:discovery-report -->` block |
 | `/ft:session-start` | `session-start` | Phase 4. Print compact session context: active mainline + descendants, worktree drift counts via `git status --porcelain`, active acceptances + nearest expiry, next-gate suggestion. Designed for Claude Code SessionStart hook `additionalContext` |
 | `/ft:pre-edit` | `pre-edit --files <a,b,c>` | Phase 4. PreToolUse hook for Edit/Write/MultiEdit. Emits Claude Code hook JSON: `{decision:"approve"}` or `{decision:"block", reason, context}`. Honors `drift_check_mode` (hard=block, soft=approve+warning, off=skip) and `hooks_mode`. Suggests `accept-drift` or `authorize` cmd templates |
 
@@ -278,6 +280,17 @@ The helper creates and validates:
 
 - `references/STATE_MACHINE.md` - statuses, transitions, evidence classes, and command workflow.
 - `references/STEWARD_PROFILE.md` - optional cross-tool responsibility contract and generated steward artifacts.
+- `references/CANDIDATE_CLASSIFICATION.md` - candidate `source` / `source_category` / `kind` vocabulary, TODO structured schema, migration policy.
 - `templates/` - deterministic starter files used by the helper.
 
 Project-specific profiles belong in the consuming repository, not in this public skill.
+
+## Non-Goals
+
+This skill intentionally does **not**:
+
+- Add project-specific discovery heuristics. Project-local rules belong in the consuming repo, not the public skill.
+- Change `authorize` / `transition` state-machine semantics. Those are stable; the candidate-classification layer is read-only with respect to them.
+- Replace `validate full`. `ft diff` is a snapshot comparison tool; full structural validation still runs through the existing validator.
+- Introduce new planning node types. New vocabulary attaches to **candidates** only — once promoted, candidates become ordinary planning nodes governed by the existing schema.
+- Rename legacy `source` labels (`pkg-root`, `readme-heading`, `entrypoint`, `changelog`, `untracked`). The new vocabulary is additive (`source_category` + `kind`) so persisted state and `promote-*` filters keep working unchanged.

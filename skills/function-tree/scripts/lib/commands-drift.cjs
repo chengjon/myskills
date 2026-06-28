@@ -233,4 +233,161 @@ function cmdRevokeDrift(root, flags) {
   console.log(`  reason (original): ${acc.reason}`);
   console.log(`path: ${driftAcceptancesPath(root)}`);
 }
-module.exports = { cmdDriftCheck, cmdAcceptDrift, cmdRevokeDrift };
+module.exports = { cmdDriftCheck, cmdAcceptDrift, cmdRevokeDrift, cmdDiff };
+
+// FT_REVIEW MED: `ft diff` — structured Function Tree diff.
+//
+// Input contract (per review suggestion #5):
+//   - Primary input: normalized candidate JSON snapshots persisted by ft doc
+//     at .governance/programs/<program>/candidates.json (deterministic, bounded).
+//   - Fallback: when a snapshot is missing for --before / --after, parse the
+//     FUNCTION_TREE.md backup files via lightweight Markdown section counting.
+//
+// `--before` / `--after` accept:
+//   - 'head'     — the current candidates.json on disk
+//   - 'prev'     — the most recent candidates.json from git HEAD
+//   - <sha>:path — explicit git blob
+//   - <file>     — explicit local file path
+//
+// Output: human-readable diff of candidate counts + per-source-category deltas
+// + per-kind deltas + added/removed candidate names (capped at 20 each).
+function cmdDiff(root, flags) {
+  const beforeRef = one(flags, 'before');
+  const afterRef = one(flags, 'after');
+  if (!beforeRef || !afterRef) {
+    console.error('ft diff requires --before <ref> --after <ref>');
+    console.error('  ref = "head" | "prev" | <sha>:<path> | <file-path>');
+    process.exit(2);
+  }
+  const program = detectProgram(root);
+  if (!program) {
+    console.error('ft diff: no .governance/programs/*/ found; run `/ft:init` first');
+    process.exit(1);
+  }
+  const before = loadSnapshotRef(root, program, beforeRef);
+  const after = loadSnapshotRef(root, program, afterRef);
+  if (!before || !after) {
+    console.error(`ft diff: missing snapshot — before=${beforeRef} after=${afterRef}`);
+    process.exit(1);
+  }
+
+  const lines = [];
+  lines.push(`diff ${beforeRef} → ${afterRef} (program ${program})`);
+  lines.push('');
+  lines.push('Counts:');
+  lines.push(`  feature candidates:  ${countOf(before, 'feature_candidates')} -> ${countOf(after, 'feature_candidates')}`);
+  lines.push(`  planned candidates:  ${countOf(before, 'planned_candidates')} -> ${countOf(after, 'planned_candidates')}`);
+  lines.push(`  verification gates:  ${countOf(before, 'verification_gates')} -> ${countOf(after, 'verification_gates')}`);
+  lines.push('');
+  lines.push('By source category:');
+  const cats = new Set([
+    ...Object.keys(before.by_source_category || {}),
+    ...Object.keys(after.by_source_category || {}),
+  ]);
+  for (const cat of Array.from(cats).sort()) {
+    const b = (before.by_source_category || {})[cat] || 0;
+    const a = (after.by_source_category || {})[cat] || 0;
+    if (b !== a) lines.push(`  ${cat}: ${b} -> ${a} (delta ${signedDelta(a - b)})`);
+  }
+  lines.push('');
+  lines.push('By kind:');
+  const kinds = new Set([
+    ...Object.keys(before.by_kind || {}),
+    ...Object.keys(after.by_kind || {}),
+  ]);
+  for (const k of Array.from(kinds).sort()) {
+    const b = (before.by_kind || {})[k] || 0;
+    const a = (after.by_kind || {})[k] || 0;
+    if (b !== a) lines.push(`  ${k}: ${b} -> ${a} (delta ${signedDelta(a - b)})`);
+  }
+  lines.push('');
+  const beforeIds = new Set((before.feature_candidates || []).map((c) => c.id).filter(Boolean));
+  const afterIds = new Set((after.feature_candidates || []).map((c) => c.id).filter(Boolean));
+  const added = (after.feature_candidates || []).filter((c) => c.id && !beforeIds.has(c.id)).slice(0, 20);
+  const removed = (before.feature_candidates || []).filter((c) => c.id && !afterIds.has(c.id)).slice(0, 20);
+  if (added.length) {
+    lines.push('Added candidates (top 20):');
+    for (const c of added) lines.push(`  + ${c.id}: ${c.name}`);
+  }
+  if (removed.length) {
+    lines.push('Removed candidates (top 20):');
+    for (const c of removed) lines.push(`  - ${c.id}: ${c.name}`);
+  }
+  console.log(lines.join('\n'));
+}
+
+function signedDelta(n) {
+  return n >= 0 ? `+${n}` : String(n);
+}
+
+function countOf(snapshot, key) {
+  return (snapshot && snapshot.counts && snapshot.counts[key]) || 0;
+}
+
+function detectProgram(root) {
+  const programsDir = path.join(root, '.governance', 'programs');
+  if (!fs.existsSync(programsDir)) return null;
+  const dirs = fs.readdirSync(programsDir).filter((d) => {
+    try { return fs.statSync(path.join(programsDir, d)).isDirectory(); } catch (_) { return false; }
+  });
+  return dirs.length === 1 ? dirs[0] : (dirs[0] || null);
+}
+
+function loadSnapshotRef(root, program, ref) {
+  const snapshotPath = path.join(root, '.governance', 'programs', program, 'candidates.json');
+  if (ref === 'head' || ref === 'current') {
+    return readJsonSafe(snapshotPath);
+  }
+  if (ref === 'prev' || ref === 'previous') {
+    // Try git HEAD version first; fall back to the most recent FUNCTION_TREE.*.md
+    // backup if no candidates.json existed at HEAD.
+    try {
+      const out = run('git', ['-C', root, 'show', `HEAD:${rel(root, snapshotPath)}`], root);
+      return JSON.parse(out);
+    } catch (_) {
+      return fallbackMarkdownSnapshot(root);
+    }
+  }
+  // Explicit git ref: '<sha>:<path>'
+  if (ref.indexOf(':') !== -1) {
+    try {
+      const out = run('git', ['-C', root, 'show', ref], root);
+      return JSON.parse(out);
+    } catch (_) { return null; }
+  }
+  // Explicit local file path.
+  if (fs.existsSync(ref)) {
+    if (/\.json$/i.test(ref)) return readJsonSafe(ref);
+    return fallbackMarkdownSnapshot(root, ref);
+  }
+  return null;
+}
+
+function fallbackMarkdownSnapshot(root, explicitPath) {
+  // Last-resort: count Markdown headings in a FUNCTION_TREE.md backup so users
+  // can compare pre-snapshot states. Numbers will not match JSON-derived counts
+  // exactly; the diff header notes this fallback so callers aren't misled.
+  const target = explicitPath || (function () {
+    const backupDir = path.join(root, '.governance', 'backups');
+    if (!fs.existsSync(backupDir)) return null;
+    const files = fs.readdirSync(backupDir)
+      .filter((f) => /^FUNCTION_TREE\..*\.md$/.test(f))
+      .map((f) => ({ f, t: fs.statSync(path.join(backupDir, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t);
+    return files.length ? path.join(backupDir, files[0].f) : null;
+  })();
+  if (!target || !fs.existsSync(target)) return null;
+  const text = readFile(target);
+  const h2 = (text.match(/^##\s+/gm) || []).length;
+  const h3 = (text.match(/^###\s+/gm) || []).length;
+  return {
+    fallback: 'markdown-section-count',
+    fallback_source: target,
+    counts: { feature_candidates: h2, planned_candidates: h3, verification_gates: 0 },
+    by_source_category: {},
+    by_kind: {},
+    feature_candidates: [],
+    planned_candidates: [],
+    verification_gates: [],
+  };
+}

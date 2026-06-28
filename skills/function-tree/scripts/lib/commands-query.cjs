@@ -51,7 +51,11 @@ function cmdConfig(root, args, flags) {
 
   if (sub === 'list') {
     const config = loadConfig(root);
-    console.log(JSON.stringify(config, null, 2));
+    // For project_profile=auto, also print the resolved value so users can
+    // see what detection picked without a separate command.
+    const { resolveProjectProfile } = require('./config.cjs');
+    const resolved = resolveProjectProfile(root, config);
+    console.log(JSON.stringify({ ...config, project_profile_resolved: resolved }, null, 2));
     return;
   }
   if (sub === 'get') {
@@ -74,6 +78,13 @@ function cmdConfig(root, args, flags) {
       }
     } else if (key === 'mainline_warning' || key === 'auto_accept_suggest') {
       normalized = (value === '1' || value.toLowerCase() === 'true');
+    } else if (key === 'project_profile') {
+      normalized = value.toLowerCase();
+      const { VALID_PROFILES } = require('./config.cjs');
+      if (!VALID_PROFILES.has(normalized)) {
+        console.error(`invalid project_profile: ${value}; valid: ${Array.from(VALID_PROFILES).join(', ')}`);
+        process.exit(2);
+      }
     } else if (!Object.prototype.hasOwnProperty.call(DEFAULT_CONFIG, key)) {
       console.error(`unknown config key: ${key}; valid: ${Object.keys(DEFAULT_CONFIG).join(', ')}`); process.exit(2);
     }

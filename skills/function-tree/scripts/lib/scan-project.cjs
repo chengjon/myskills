@@ -95,6 +95,13 @@ function collectProjectInfo(root) {
   ], 32);
   const pmCoverage = { ...pm.coverage, gateCandidates: pm.gateCandidates.length };
 
+  // FT_REVIEW MED: attach normalized `source_category` + `kind` to every
+  // candidate so ft diff / ft doc --report can group by the public vocabulary
+  // without breaking the legacy `source` labels that promote-* filters depend on.
+  const { normalizeCandidate } = require('./candidate-classify.cjs');
+  for (const c of featureCandidates) normalizeCandidate(c);
+  for (const c of plannedCandidates) normalizeCandidate(c);
+
   return {
     name: detectProjectName(root),
     head: gitHead(root),
@@ -834,6 +841,54 @@ function uniqueCandidates(candidates, limit) {
   return unique;
 }
 
+// FT_REVIEW P4: parse a TODO/FIXME line into structured fields.
+//
+// Heuristics, in order:
+//   1. Extract component (filename-ish or module-ish token) when the text
+//      mentions "in <component>" or "<component>: ..." prefixes.
+//   2. Extract action verb from a leading "add|support|fix|refactor|remove|
+//      migrate|update|handle|improve|extract|replace|validate|test ..." token.
+//   3. The remainder becomes `object` (the thing being acted on).
+//   4. `category` is derived from action — capability gap vs maintenance.
+//
+// All fields are best-effort: empty strings when no signal is found. Callers
+// must treat missing fields as "unknown", not "no TODO".
+function parseTodoStructure(text) {
+  const cleaned = String(text || '').trim();
+  if (!cleaned) return { component: '', action: '', object: '', category: 'unknown' };
+
+  // Component extraction: "in foo.bar:" / "foo.bar:" / "(foo) ..."
+  let component = '';
+  const compMatch = cleaned.match(/^\(?\s*([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)\s*\)?:\s*(.+)$/);
+  if (compMatch) {
+    component = compMatch[1];
+  } else {
+    const inMatch = cleaned.match(/\bin\s+([A-Za-z0-9_./-]+)\b/);
+    if (inMatch) component = inMatch[1];
+  }
+
+  // Action extraction.
+  const ACTION_RE = /^\s*(add|support|fix|handle|refactor|remove|migrate|update|improve|extract|replace|validate|test|implement|extend|document|clean|optimi[sz]e|configure|enable|disable|drop|deprecate)\b\s*(.*)$/i;
+  const actionMatch = cleaned.match(ACTION_RE);
+  let action = '';
+  let object = cleaned;
+  if (actionMatch) {
+    action = actionMatch[1].toLowerCase();
+    object = actionMatch[2].trim();
+  }
+
+  // Category derivation.
+  const CAPABILITY_ACTIONS = new Set(['add', 'support', 'implement', 'extend', 'enable', 'handle']);
+  const MAINTENANCE_ACTIONS = new Set(['refactor', 'remove', 'clean', 'optimi', 'optimize', 'deprecate', 'drop', 'replace', 'migrate', 'update']);
+  const QUALITY_ACTIONS = new Set(['test', 'validate', 'document']);
+  let category = 'unknown';
+  if (CAPABILITY_ACTIONS.has(action)) category = 'capability';
+  else if (MAINTENANCE_ACTIONS.has(action)) category = 'maintenance';
+  else if (QUALITY_ACTIONS.has(action)) category = 'quality';
+
+  return { component, action, object, category };
+}
+
 function collectSourceTodoCandidates(root, sourceRoots) {
   // FT_SKILL_REVIEW P1#6: Aggregate TODOs by file. A file that says "TODO: support X"
   // and "TODO: support Y" twice should produce one feature candidate ("support X, Y"
@@ -873,6 +928,12 @@ function collectSourceTodoCandidates(root, sourceRoots) {
     const first = entries[0];
     const isTest = first.kind === 'test improvement';
     const evidenceSuffix = entries.length > 1 ? ` (+${entries.length - 1} more in this file)` : '';
+    // FT_REVIEW P4: augment (not replace) per-file aggregation with a
+    // structured component/action/object/category schema. The first TODO's
+    // text is parsed into these fields on a best-effort basis so downstream
+    // ft diff / ft doc --report can group by category without losing the
+    // original per-file aggregation behavior.
+    const structured = parseTodoStructure(first.name);
     candidates.push({
       id: slugifyCandidate(first.name),
       name: first.name,
@@ -882,6 +943,12 @@ function collectSourceTodoCandidates(root, sourceRoots) {
       boundary: isTest
         ? 'Test improvement TODO; not a product roadmap item. Verify scope before implementation.'
         : 'Source code TODO; verify intent, owner, and priority before implementation.',
+      // Structured fields (additive — older readers ignore them):
+      component: structured.component,
+      action: structured.action,
+      object: structured.object,
+      category: structured.category,
+      todo_count_in_file: entries.length,
     });
     if (candidates.length >= 48) break;
   }

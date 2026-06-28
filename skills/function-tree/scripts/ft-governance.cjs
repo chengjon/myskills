@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { cmdDriftCheck, cmdAcceptDrift, cmdRevokeDrift } = require('./lib/commands-drift.cjs');
+const { cmdDriftCheck, cmdAcceptDrift, cmdRevokeDrift, cmdDiff } = require('./lib/commands-drift.cjs');
 const { cmdSessionStart, cmdPreEdit } = require('./lib/commands-hooks.cjs');
 const { initProgram, newNode, newNodeBatch, reparentNode, observeNode, authorizeNode, transitionNode, closeoutNode, cmdSuggestNodes, cmdPromote } = require('./lib/commands-nodes.cjs');
 const { printStatus, printGate, cmdConfig, cmdMainline, cmdLocate, cmdMap, installGuard, repairActiveGates } = require('./lib/commands-query.cjs');
@@ -27,7 +27,7 @@ function main() {
         initProgram(root, parsed.args, parsed.flags);
         break;
       case 'doc':
-        refreshFunctionTreeDoc(root);
+        refreshFunctionTreeDoc(root, parsed.flags);
         break;
       case 'new-node':
         newNode(root, parsed.args, parsed.flags);
@@ -102,6 +102,9 @@ function main() {
       case 'revoke-drift':
         cmdRevokeDrift(root, parsed.flags, parsed.args);
         break;
+      case 'diff':
+        cmdDiff(root, parsed.flags);
+        break;
       case 'config':
         cmdConfig(root, parsed.args, parsed.flags);
         break;
@@ -124,7 +127,8 @@ function usage(code) {
     'Usage:',
     '  ft-governance.cjs init [<program>] [--ref <function-tree-node>] [--description <text>] [--no-doc] [--root <repo>]',
     '       <program> defaults to basename(root); --ref defaults to <program>',
-    '  ft-governance.cjs doc [--root <repo>]',
+    '  ft-governance.cjs doc [--report] [--root <repo>]',
+    '       --report also writes the Discovery Quality Report into FUNCTION_TREE.md',
     '  ft-governance.cjs new-node <program> <node-id> --title <text> --ref <function-tree-node> [--type <kind>] [--owner-lane <lane>] [--parent <id>] [--freshness <policy>] [--track <mainline|backlog|optimize|untracked>] [--mainline-id <id>] [--depth <0|1|2|99>] [--root <repo>]',
     '       --type accepts: feature, capability, epic, module, component, bug, task, refactor, spike, evidence, decision, authorization, implementation, closeout, external',
     '  ft-governance.cjs new-node-batch <program> --from-dirs <dir> [--id-prefix <text>] [--pattern <glob>] [--parent <id>] [--track <t>] [--mainline-id <id>] [--depth <n>] [--type <kind>] [--dry-run] [--root <repo>]',
@@ -162,6 +166,8 @@ function usage(code) {
     '  ft-governance.cjs accept-drift --reason <text> --files <a,b,c> [--expires <spec>] [--mainline <id|none>] [--by <name>] [--root <repo>]',
     '       --expires default 30d; pass "0" for permanent; format: <N><s|m|h|d|w>',
     '  ft-governance.cjs revoke-drift --id <acceptance-id> [--root <repo>]',
+    '  ft-governance.cjs diff --before <ref> --after <ref> [--root <repo>]',
+    '       <ref> = "head" | "prev" | <sha>:<path> | <file-path>; compares candidate JSON snapshots',
     '  ft-governance.cjs config [list|get|set] [--key <name>] [--value <text>] [--root <repo>]',
     '  ft-governance.cjs session-start [--root <repo>]',
     '  ft-governance.cjs pre-edit --files <a,b,c> [--root <repo>]',

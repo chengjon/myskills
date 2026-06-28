@@ -63,13 +63,84 @@ function renderCapabilityMappingRow(entry) {
   if (!sources) return '';
   return `| ${escapeCell(n.id)} | ${escapeCell(n.title || n.id)} | ${escapeCell(sources)} |`;
 }
-function refreshFunctionTreeDoc(root) {
+function refreshFunctionTreeDoc(root, flags) {
   const result = writeFunctionTreeDoc(root, {});
   const output = [
     result.changed ? `updated ${rel(root, result.docPath)}` : `${rel(root, result.docPath)} unchanged`,
   ];
   if (result.backupPath) output.push(`backup: ${rel(root, result.backupPath)}`);
   console.log(output.join('\n'));
+  // FT_REVIEW MED: Discovery Quality Report output channel.
+  //   Default: emit a concise report to stdout (additive info, easy to scan).
+  //   `--report`: also persist the full report body into FUNCTION_TREE.md
+  //              under a <!-- function-tree:discovery-report --> block so the
+  //              human-readable tree carries the audit forward.
+  if (flags && (flags.report === true)) {
+    const report = renderDiscoveryQualityReport(result.info, root);
+    appendDiscoveryReportToDoc(result.docPath, report);
+    console.log('discovery-quality report written into FUNCTION_TREE.md');
+  } else {
+    const short = renderDiscoveryQualityReport(result.info, root, { concise: true });
+    if (short) console.log(short);
+  }
+}
+
+// renderDiscoveryQualityReport(info, root, opts): builds the Discovery Quality
+// Report text. Concise mode prints only signals worth attention (missing
+// README, no entrypoints, no routes for a service-api, etc.); full mode
+// prints every signal so the persistent doc copy is auditable.
+function renderDiscoveryQualityReport(info, root, opts) {
+  opts = opts || {};
+  const concise = Boolean(opts.concise);
+  if (!info) return '';
+  const lines = [];
+  const feat = info.featureCandidates || [];
+  const plan = info.plannedCandidates || [];
+  const gates = info.gateCandidates || [];
+  const cats = {};
+  for (const c of feat.concat(plan)) {
+    const k = (c && c.source_category) || 'unknown';
+    cats[k] = (cats[k] || 0) + 1;
+  }
+  const signals = [];
+  if (!feat.length) signals.push({ level: 'warn', text: 'no feature candidates discovered — check README / entrypoints' });
+  if (!gates.length) signals.push({ level: 'info', text: 'no verification gates discovered (no ci:/make:/just:/task:)' });
+  if ((cats['route'] || 0) === 0 && (cats['manifest'] || 0) === 0 && feat.length < 3) {
+    signals.push({ level: 'warn', text: 'few entrypoint/route signals — discovery may have missed web/api surfaces' });
+  }
+  if ((cats['git-status'] || 0) > 0) {
+    signals.push({ level: 'info', text: `${cats['git-status']} untracked/staged file(s) — promote via /ft:promote-untracked if intentional` });
+  }
+
+  if (concise) {
+    if (!signals.length) return '';
+    return ['Discovery quality signals:'].concat(signals.map((s) => `  [${s.level}] ${s.text}`)).join('\n');
+  }
+  lines.push('## Discovery Quality Report');
+  lines.push('');
+  lines.push(`Feature candidates: ${feat.length} | Planned: ${plan.length} | Verification gates: ${gates.length}`);
+  lines.push('');
+  lines.push('By source category:');
+  for (const k of Object.keys(cats).sort()) lines.push(`  - ${k}: ${cats[k]}`);
+  if (signals.length) {
+    lines.push('');
+    lines.push('Signals:');
+    for (const s of signals) lines.push(`  - [${s.level}] ${s.text}`);
+  }
+  return lines.join('\n');
+}
+
+function appendDiscoveryReportToDoc(docPath, report) {
+  if (!report) return;
+  const fs = require('fs');
+  let existing = fs.existsSync(docPath) ? readFile(docPath) : '';
+  const block = `<!-- function-tree:discovery-report:start -->\n${report}\n<!-- function-tree:discovery-report:end -->`;
+  if (/<!-- function-tree:discovery-report:start -->[\s\S]*?<!-- function-tree:discovery-report:end -->/.test(existing)) {
+    existing = existing.replace(/<!-- function-tree:discovery-report:start -->[\s\S]*?<!-- function-tree:discovery-report:end -->/, block);
+  } else {
+    existing = existing.trimEnd() + '\n\n' + block + '\n';
+  }
+  writeFile(docPath, existing);
 }
 
 function writeFunctionTreeDoc(root, context) {
@@ -90,7 +161,73 @@ function writeFunctionTreeDoc(root, context) {
     backupPath = backupFunctionTreeDoc(root, existing);
   }
   writeFile(docPath, content);
+  // FT_REVIEW MED: persist a normalized candidate JSON snapshot so `ft diff`
+  // can compare two snapshots deterministically rather than parsing free-form
+  // Markdown. One file per program; if no program dir exists yet, skip.
+  try { persistCandidateSnapshot(root, info); } catch (_) { /* non-fatal */ }
   return { docPath, backupPath, changed: true, info };
+}
+
+// persistCandidateSnapshot(root, info): writes
+// .governance/programs/<program>/candidates.json containing a normalized view
+// of featureCandidates + plannedCandidates + gateCandidates. The snapshot is
+// keyed by candidate id; each entry carries {name, type, status, source,
+// source_category, kind, evidence}. Snapshots are read by cmdDiff() in
+// commands-drift.cjs.
+function persistCandidateSnapshot(root, info) {
+  const programsDir = path.join(root, '.governance', 'programs');
+  if (!fs.existsSync(programsDir)) return;
+  const { normalizeCandidate } = require('./candidate-classify.cjs');
+  const programs = fs.readdirSync(programsDir).filter((d) => {
+    try { return fs.statSync(path.join(programsDir, d)).isDirectory(); } catch (_) { return false; }
+  });
+  const feature = (info.featureCandidates || []).map(normalizeCandidate);
+  const planned = (info.plannedCandidates || []).map(normalizeCandidate);
+  const gates = info.gateCandidates || [];
+  const snap = {
+    generated_at: new Date().toISOString(),
+    head: info.head || null,
+    counts: {
+      feature_candidates: feature.length,
+      planned_candidates: planned.length,
+      verification_gates: gates.length,
+    },
+    by_source_category: countBy(feature.concat(planned), 'source_category'),
+    by_kind: countBy(feature.concat(planned), 'kind'),
+    feature_candidates: feature.map(snapshotEntry),
+    planned_candidates: planned.map(snapshotEntry),
+    verification_gates: gates.slice(),
+  };
+  for (const prog of programs) {
+    const outFile = path.join(programsDir, prog, 'candidates.json');
+    writeJson(outFile, snap);
+  }
+}
+
+function snapshotEntry(c) {
+  return {
+    id: c.id || null,
+    name: c.name || c.title || null,
+    type: c.type || null,
+    status: c.status || null,
+    source: c.source || null,
+    source_category: c.source_category || null,
+    kind: c.kind || null,
+    evidence: c.evidence || null,
+    component: c.component || null,
+    action: c.action || null,
+    object: c.object || null,
+    category: c.category || null,
+  };
+}
+
+function countBy(arr, key) {
+  const out = {};
+  for (const item of arr) {
+    const k = (item && item[key]) || 'unknown';
+    out[k] = (out[k] || 0) + 1;
+  }
+  return out;
 }
 
 function backupFunctionTreeDoc(root, content) {
